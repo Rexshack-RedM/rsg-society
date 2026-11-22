@@ -1,4 +1,4 @@
-# rsg-society 3.3.0 – Documentation
+# rsg-society 3.4.0 – Documentation
 
 ## Contents
 1. Architecture 2. Data 3. Permissions 4. Payroll 5. Fines 6. Exports 7. Events 8. Commands 9. rsg-core change 10. Migration 11. Security 12. Database 13. Troubleshooting 14. Admin panel
@@ -45,6 +45,7 @@ Amount limits in `Config.Fines`. Collected from `PayWith` in order. With `AllowP
 ## 6. Exports (server)
 | Export | Returns |
 |---|---|
+| `EnsureJobSociety(jobName)` -> boolean | creates the society of a job that exists in rsg-core (used by rsg-ranch and rsg-stores) |
 | `GetAccount(name)` / `GetBalance(name)` | balance (dollars); job societies are created on demand |
 | `GetGangAccount(name)` | balance |
 | `AddMoney(name, amount, reason, actor?)` / `RemoveMoney(...)` (also `AddGangMoney`, `RemoveGangMoney`) | bool (remove fails if balance is too low) |
@@ -63,6 +64,7 @@ Amount limits in `Config.Fines`. Collected from `PayWith` in order. With `AllowP
 | `SetGangOwner(name, citizenid)` -> `ok` | changes the recorded owner of a gang (ranks are changed with `SetMemberLevel`) |
 | `AddRank(name, rankName)` -> `ok, level` | gangs: adds a rank below the lowest boss rank (max `Config.Gang.MaxRanks`) |
 | `RemoveRank(name, level)` -> `ok` | gangs: deletes a non-boss rank; its members move one rank down. Needs at least 3 ranks |
+| `RemoveJobSociety(name)` -> `ok, balance` | removes a job society (account, rank permissions, desks, ledger, audit, fines) and returns its balance in dollars so the caller can pay it out. Refuses gangs and societies named in `Config.Jobs` or `Config.Locations`. The job itself stays in rsg-core (delete it there). Used by rsg-stores when a store closes |
 | `IsReady()` -> boolean | true once all societies are loaded; other resources wait for it at start |
 | `OpenStorage(src, name)` | opens the stash (checks access) |
 

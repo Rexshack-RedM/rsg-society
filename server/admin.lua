@@ -429,17 +429,9 @@ function Actions.create_gang(ctx, data)
     return { ok = true, msg = locale('sv_adm_gang_created', label), society = result }
 end
 
---- Removes a job society (its account, rank permissions, desks and history). The job itself stays in rsg-core.
-function Actions.delete_job(ctx, data)
-    local name, s = societyOf(data)
-    if not name or s.type ~= 'job' then return reply(false, 'sv_err_unknown') end
-    if data.confirm ~= true then return reply(false, 'sv_err_unknown') end
-    local label = Soc.Label(name)
-    if Config.Jobs[name] then return reply(false, 'sv_adm_cfg_job') end
-    for _, loc in ipairs(Config.Locations) do
-        if loc.society == name then return reply(false, 'sv_adm_cfg_job') end
-    end
-
+--- Deletes a job society row set (account, rank permissions, desks, history). The job itself stays in rsg-core.
+--- Callers must have checked that it is a job society that may be removed.
+function Soc.DeleteJobSociety(name)
     for _, q in ipairs({
         'DELETE FROM rsg_society_perms WHERE society = ?',
         'DELETE FROM rsg_society_ranks WHERE society = ?',
@@ -456,6 +448,20 @@ function Actions.delete_job(ctx, data)
         if loc.society == name then Soc.Locations[id] = nil end
     end
     Soc.BroadcastLocations()
+end
+
+--- Removes a job society (its account, rank permissions, desks and history). The job itself stays in rsg-core.
+function Actions.delete_job(ctx, data)
+    local name, s = societyOf(data)
+    if not name or s.type ~= 'job' then return reply(false, 'sv_err_unknown') end
+    if data.confirm ~= true then return reply(false, 'sv_err_unknown') end
+    local label = Soc.Label(name)
+    if Config.Jobs[name] then return reply(false, 'sv_adm_cfg_job') end
+    for _, loc in ipairs(Config.Locations) do
+        if loc.society == name then return reply(false, 'sv_adm_cfg_job') end
+    end
+
+    Soc.DeleteJobSociety(name)
     print(('^3[rsg-society] %s removed the job society %s (balance $%.2f)^7'):format(ctx.who, name, s.balance / 100))
     if Config.Logging.enabled then
         TriggerEvent('rsg-log:server:CreateLog', Config.Logging.channel, 'Society removed', 'red', ('%s removed %s'):format(ctx.who, label), false)
@@ -808,4 +814,19 @@ registerCallback('rsg-society:server:adminAct', function(src, action, data)
     if not ctx then return { ok = false, msg = locale(why), closed = why == 'sv_adm_denied' } end
     if Soc.OnCooldown(src) then return { ok = false, msg = locale('sv_err_slow') } end
     return fn(ctx, type(data) == 'table' and data or {}) or { ok = false, msg = locale('sv_err_unknown') }
+end)
+
+--- RemoveJobSociety(name) -> ok, balance (dollars): for resources that create their own job societies (rsg-stores) and close them again.
+--- Removes the account, rank permissions, desks and history of a JOB society and returns what was in the account so the caller can pay it out.
+--- Refuses gangs and societies named in Config.Jobs / Config.Locations. The job itself stays in rsg-core (delete it there).
+exports('RemoveJobSociety', function(name)
+    local s = type(name) == 'string' and Soc.S[name]
+    if not s or s.type ~= 'job' or Config.Jobs[name] then return false, 0 end
+    for _, loc in ipairs(Config.Locations) do
+        if loc.society == name then return false, 0 end
+    end
+    local balance = s.balance / 100
+    Soc.DeleteJobSociety(name)
+    print(('^3[rsg-society] %s removed the job society %s (balance $%.2f)^7'):format(GetInvokingResource() or 'unknown', name, balance))
+    return true, balance
 end)

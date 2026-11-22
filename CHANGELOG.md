@@ -1,5 +1,10 @@
 # Changelog
 
+## 3.4.0
+- New: `RemoveJobSociety(name)` server export. Removes a job society and returns its balance (dollars) so the calling resource can pay it out. Refuses gangs and societies named in `Config.Jobs` / `Config.Locations`. Used by rsg-stores 3.2.0 to clean up when a player-owned store closes.
+- The admin panel's *Remove society* action now shares the same code (`Soc.DeleteJobSociety`); behaviour is unchanged.
+- Docs: listed `EnsureJobSociety` in the export table.
+
 ## 3.3.0
 - New: admin panel, opened with `/societyadmin` (or a rebindable key). Tabs: Dashboard, Societies, Players, Desks, Fines, Audit, Tools. Manages every society: create job societies and gangs, funds, payroll, members, ranks and permissions, ledger, audit, fines, storage, disband or remove, place and remove desks, import, reload and prune.
 - Every admin call is a server callback that checks `Config.AdminPermission` again, is throttled and validates its arguments. Admin actions are audited as `Name [admin]`.
