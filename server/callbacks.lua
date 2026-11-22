@@ -1,12 +1,28 @@
 local RSGCore = Soc.Core
 
+-- A handler that errors must still answer, otherwise the menu waits for the full timeout.
 local function registerCallback(name, fn)
-    RSGCore.Functions.CreateCallback(name, function(source, cb, ...) cb(fn(source, ...)) end)
+    RSGCore.Functions.CreateCallback(name, function(source, cb, ...)
+        local ok, res = pcall(fn, source, ...)
+        if not ok then
+            print(('^1[rsg-society] callback %s failed: %s^7'):format(name, tostring(res)))
+            res = { ok = false, msg = locale('sv_err_unknown') }
+        end
+        cb(res)
+    end)
 end
 
 local function reply(ok, key, ...)
     return { ok = ok, msg = locale(key, ...) }
 end
+
+-- menu actions that need a job member to be on duty (Config.OnDuty)
+local dutyActions = {}
+for _, a in ipairs(Config.OnDuty.Actions or {}) do dutyActions[a] = true end
+
+-- ledger kinds the finance tab can filter by
+local LedgerKinds = {}
+for _, k in ipairs({ 'deposit', 'withdraw', 'payroll', 'fine', 'refund', 'api', 'admin', 'migration', 'bonus', 'transfer' }) do LedgerKinds[k] = true end
 
 -----------------------------------------------------------------------
 -- Guard: who is asking, and may they?
@@ -47,6 +63,8 @@ local function buildView(ctx)
         me = { cid = ctx.cid, grade = acc.gradeName, level = acc.level, boss = acc.boss },
         perms = permArray(acc, s.type),
         remoteStorage = s.type == 'job' or Config.Gang.RemoteStorage,
+        maxTransaction = Config.MaxTransaction,
+        motd = s.motd,
     }
 end
 
@@ -55,6 +73,7 @@ end
 -----------------------------------------------------------------------
 registerCallback('rsg-society:server:open', function(src, ref)
     if not Soc.Ready then return { ok = false, msg = locale('sv_err_not_ready') } end
+    if Soc.OnReadCooldown(src) then return { ok = false, msg = locale('sv_err_slow') } end
     local Player = RSGCore.Functions.GetPlayer(src)
     if not Player or type(ref) ~= 'table' then return { ok = false, msg = locale('sv_err_player') } end
     local cid = Player.PlayerData.citizenid
@@ -121,6 +140,7 @@ function Tabs.members(ctx)
         canFire = ctx.acc.perms.fire == true,
         canPromote = ctx.acc.perms.promote == true,
         canTransfer = ctx.s.type == 'gang' and ctx.acc.boss == true,
+        canBonus = ctx.acc.perms.bonus == true and (Config.Bonus.Max or 0) > 0,
     }
 end
 
@@ -144,21 +164,25 @@ function Tabs.ranks(ctx)
             if set[p] then list[#list + 1] = p end
         end
         local editable = not g.boss and (g.level < ctx.acc.level or (Config.AllowEqualRank and ctx.acc.boss and g.level <= ctx.acc.level))
-        grades[#grades + 1] = { level = g.level, name = g.name, pay = g.payment / 100, boss = g.boss, perms = list, editable = editable and true or false }
+        grades[#grades + 1] = { level = g.level, name = g.name, pay = g.payment / 100, boss = g.boss, perms = list, editable = editable and true or false, deletable = ctx.s.type == 'gang' and editable and true or false }
     end
     local grantable = {}
     for _, p in ipairs(Soc.PermList(ctx.s.type)) do
         if ctx.acc.boss or ctx.acc.perms[p] then grantable[#grantable + 1] = p end
     end
-    return { grades = grades, allPerms = Soc.PermList(ctx.s.type), grantable = grantable, gang = ctx.s.type == 'gang' }
+    return {
+        grades = grades, allPerms = Soc.PermList(ctx.s.type), grantable = grantable, gang = ctx.s.type == 'gang',
+        canEditRanks = ctx.s.type == 'gang', count = #grades, maxRanks = Config.Gang.MaxRanks or 10,
+    }
 end
 
 function Tabs.finance(ctx, arg)
     if not ctx.acc.perms.finance then return nil, 'sv_err_no_permission' end
     local before = math.floor(tonumber(type(arg) == 'table' and arg.before or 0) or 0)
+    local kind = type(arg) == 'table' and type(arg.kind) == 'string' and LedgerKinds[arg.kind] and arg.kind or ''
     local rows = MySQL.query.await(
-        "SELECT id, kind, amount_cents, balance_cents, actor, note, DATE_FORMAT(created_at, '%Y-%m-%d %H:%i') AS created FROM rsg_society_ledger WHERE society = ? AND (? = 0 OR id < ?) ORDER BY id DESC LIMIT ?",
-        { ctx.name, before, before, Config.PageSize + 1 }) or {}
+        "SELECT id, kind, amount_cents, balance_cents, actor, note, DATE_FORMAT(created_at, '%Y-%m-%d %H:%i') AS created FROM rsg_society_ledger WHERE society = ? AND (? = 0 OR id < ?) AND (? = '' OR kind = ?) ORDER BY id DESC LIMIT ?",
+        { ctx.name, before, before, kind, kind, Config.PageSize + 1 }) or {}
     local more = #rows > Config.PageSize
     if more then rows[#rows] = nil end
     local out = {}
@@ -167,10 +191,20 @@ function Tabs.finance(ctx, arg)
     end
     local wages = {}
     for _, g in ipairs(Soc.Grades(ctx.name)) do wages[#wages + 1] = { name = g.name, pay = g.payment / 100 } end
+    local targets = {}
+    if Config.Transfers.Enabled and ctx.acc.perms.withdraw then
+        for other, o in pairs(Soc.S) do
+            if other ~= ctx.name and (not Config.Transfers.SameTypeOnly or o.type == ctx.s.type) then
+                targets[#targets + 1] = { name = other, label = Soc.Label(other) }
+            end
+        end
+        table.sort(targets, function(a, b) return a.label < b.label end)
+    end
     return {
         balance = ctx.s.balance / 100, ledger = out, more = more, payroll = ctx.s.payroll,
         canDeposit = ctx.acc.perms.deposit == true, canWithdraw = ctx.acc.perms.withdraw == true, canPayroll = ctx.acc.perms.payroll == true,
         wages = wages, max = Config.MaxTransaction, payrollEnabled = Config.Payroll.Enabled,
+        transferTargets = targets, transferMax = Config.Transfers.Max,
     }
 end
 
@@ -195,6 +229,18 @@ function Tabs.audit(ctx, arg)
     return { rows = out, more = more }
 end
 
+--- who put what into the shared storage and took what out (rsg-inventory keeps this log)
+function Tabs.stash(ctx)
+    if not ctx.acc.perms.audit then return nil, 'sv_err_no_permission' end
+    local ok, rows = pcall(function() return exports['rsg-inventory']:GetStashHistory('society_' .. ctx.name, 100) end)
+    local out = {}
+    for _, r in ipairs(ok and type(rows) == 'table' and rows or {}) do
+        local item = RSGCore.Shared.Items[r.item]
+        out[#out + 1] = { name = r.name or '', action = r.action, item = item and item.label or r.item, amount = r.amount, time = tonumber(r.time) or 0 }
+    end
+    return { rows = out }
+end
+
 function Tabs.settings(ctx)
     local acc, s = ctx.acc, ctx.s
     if s.type ~= 'gang' then return { gang = false } end
@@ -206,6 +252,7 @@ function Tabs.settings(ctx)
 end
 
 registerCallback('rsg-society:server:tab', function(src, name, tab, arg)
+    if Soc.OnReadCooldown(src) then return { ok = false, msg = locale('sv_err_slow') } end
     local ctx, why = guard(src, name)
     if not ctx then return { ok = false, msg = locale(why) } end
     local fn = Tabs[tab]
@@ -351,6 +398,15 @@ function Actions.withdraw(ctx, data)
     if not ctx.acc.perms.withdraw then return reply(false, 'sv_err_no_permission') end
     local cents = sanitizeAmount(data.amount)
     if not cents then return reply(false, 'sv_err_amount') end
+    local limit = Config.Withdraw.DailyLimit or 0
+    if limit > 0 and not (Config.Withdraw.BossesExempt and ctx.acc.boss) then
+        local used = tonumber(MySQL.scalar.await(
+            "SELECT COALESCE(-SUM(amount_cents), 0) FROM rsg_society_ledger WHERE society = ? AND citizenid = ? AND kind = 'withdraw' AND created_at > (NOW() - INTERVAL 1 DAY)",
+            { ctx.name, ctx.cid })) or 0
+        if used + cents > limit * 100 then
+            return reply(false, 'sv_err_withdraw_limit', ('%.2f'):format(math.max(0, limit * 100 - used) / 100))
+        end
+    end
     if not Soc.Debit(ctx.name, cents, 'withdraw', nil, ctx.cid, ctx.who) then return reply(false, 'sv_err_funds') end
     if not ctx.Player.Functions.AddMoney('cash', cents / 100, 'society-withdraw') then
         Soc.Credit(ctx.name, cents, 'refund', locale('sv_ledger_withdraw_failed'), ctx.cid, ctx.who)
@@ -369,6 +425,18 @@ function Actions.payroll(ctx, data)
     return reply(true, on and 'sv_payroll_on' or 'sv_payroll_off')
 end
 
+--- Validates the name and wage of a gang rank. Returns name, cents, or nil, reasonKey.
+local function cleanRankMeta(meta)
+    local name = type(meta.name) == 'string' and meta.name:gsub('[%c<>]', ''):gsub('^%s+', ''):gsub('%s+$', '') or ''
+    local len = utf8.len(name)
+    if not len or len < 2 or len > 24 then return nil, 'sv_err_rank_name' end
+    local pay = tonumber(meta.pay) or 0
+    if pay ~= pay or pay < 0 or pay > Config.Gang.MaxRankPay then return nil, 'sv_err_amount' end
+    return name, math.floor(pay * 100 + 0.5)
+end
+
+--- Saves what one rank may do. For gangs the same call can also rename the rank and set its wage (data.meta = { name, pay }),
+--- so the Ranks tab saves with a single request (two requests in a row would trip the action cooldown).
 function Actions.perms(ctx, data)
     if not ctx.acc.perms.ranks then return reply(false, 'sv_err_no_permission') end
     local level = math.floor(tonumber(data.level) or -1)
@@ -376,6 +444,14 @@ function Actions.perms(ctx, data)
     if not grade or grade.boss then return reply(false, 'sv_err_bad_rank') end
     if not (level < ctx.acc.level or (Config.AllowEqualRank and ctx.acc.boss and level <= ctx.acc.level)) then return reply(false, 'sv_err_outranked') end
     if type(data.perms) ~= 'table' then return reply(false, 'sv_err_unknown') end
+
+    local metaName, metaCents
+    if data.meta ~= nil then
+        if ctx.s.type ~= 'gang' or type(data.meta) ~= 'table' then return reply(false, 'sv_err_unknown') end
+        local n, c = cleanRankMeta(data.meta)
+        if not n then return reply(false, c) end
+        metaName, metaCents = n, c
+    end
 
     local set, list = {}, {}
     for _, p in ipairs(data.perms) do
@@ -386,6 +462,16 @@ function Actions.perms(ctx, data)
         end
     end
     table.sort(list)
+
+    -- every check passed: write
+    local rank = metaName and Soc.Ranks[ctx.name] and Soc.Ranks[ctx.name][level]
+    if rank then
+        rank.name, rank.payment = metaName, metaCents
+        MySQL.update('UPDATE rsg_society_ranks SET name = ?, payment_cents = ? WHERE society = ? AND level = ?', { metaName, metaCents, ctx.name, level })
+        Soc.SyncGangDef(ctx.name)
+        Soc.Audit(ctx.name, ctx.cid, ctx.who, 'rank_edit', ('%s $%.2f'):format(metaName, metaCents / 100))
+        grade = { name = metaName }
+    end
     Soc.Perms[ctx.name] = Soc.Perms[ctx.name] or {}
     Soc.Perms[ctx.name][level] = set
     MySQL.insert('INSERT INTO rsg_society_perms (society, level, perms) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE perms = VALUES(perms)', { ctx.name, level, json.encode(list) })
@@ -393,24 +479,83 @@ function Actions.perms(ctx, data)
     return reply(true, 'sv_perms_saved', grade.name)
 end
 
-function Actions.rankmeta(ctx, data)
+--- One-off payment from the account to an online member.
+function Actions.bonus(ctx, data)
+    if not ctx.acc.perms.bonus or (Config.Bonus.Max or 0) <= 0 then return reply(false, 'sv_err_no_permission') end
+    local cents = Soc.ToCents(data.amount)
+    if not cents or cents > Config.Bonus.Max * 100 then return reply(false, 'sv_err_amount') end
+    local cid = data.cid
+    if type(cid) ~= 'string' or cid == ctx.cid then return reply(false, 'sv_err_self') end
+    local m = memberOf(ctx, cid)
+    if not m then return reply(false, 'sv_err_not_member') end
+    local Target = RSGCore.Functions.GetPlayerByCitizenId(cid)
+    if not Target then return reply(false, 'sv_err_offline_member') end
+
+    if not Soc.Debit(ctx.name, cents, 'bonus', m.name, ctx.cid, ctx.who) then return reply(false, 'sv_err_funds') end
+    if not Soc.PayPlayer(Target, cents / 100, 'society-bonus') then
+        Soc.Credit(ctx.name, cents, 'refund', locale('sv_ledger_wage_refund'), ctx.cid, ctx.who)
+        return reply(false, 'sv_err_unknown')
+    end
+    Soc.Audit(ctx.name, ctx.cid, ctx.who, 'bonus', ('$%.2f'):format(cents / 100), cid, m.name)
+    Soc.Notify(Target.PlayerData.source, Soc.Label(ctx.name), locale('sv_bonus_received', ('%.2f'):format(cents / 100)), 'success')
+    return reply(true, 'sv_bonus_sent', m.name, ('%.2f'):format(cents / 100))
+end
+
+--- Moves money from this account to another society account.
+function Actions.transfer_funds(ctx, data)
+    if not Config.Transfers.Enabled or not ctx.acc.perms.withdraw then return reply(false, 'sv_err_no_permission') end
+    local to = type(data.to) == 'string' and data.to or nil
+    local target = to and Soc.S[to]
+    if not target or to == ctx.name or (Config.Transfers.SameTypeOnly and target.type ~= ctx.s.type) then return reply(false, 'sv_err_unknown') end
+    local cents = Soc.ToCents(data.amount)
+    if not cents or cents > (Config.Transfers.Max or 0) * 100 or cents > Config.MaxTransaction * 100 then return reply(false, 'sv_err_amount') end
+
+    if not Soc.Debit(ctx.name, cents, 'transfer', Soc.Label(to), ctx.cid, ctx.who) then return reply(false, 'sv_err_funds') end
+    Soc.Credit(to, cents, 'transfer', Soc.Label(ctx.name), ctx.cid, ctx.who)
+    Soc.Audit(ctx.name, ctx.cid, ctx.who, 'transfer_funds', ('$%.2f -> %s'):format(cents / 100, to))
+    Soc.Audit(to, ctx.cid, ctx.who, 'transfer_funds', ('$%.2f <- %s'):format(cents / 100, ctx.name))
+    return reply(true, 'sv_transferred_funds', ('%.2f'):format(cents / 100), Soc.Label(to))
+end
+
+--- The announcement members see on the Overview tab. Empty text clears it.
+function Actions.motd(ctx, data)
+    if not ctx.acc.perms.announce then return reply(false, 'sv_err_no_permission') end
+    local text = type(data.text) == 'string' and data.text:gsub('[%c<>]', ' '):gsub('^%s+', ''):gsub('%s+$', '') or ''
+    local max = Config.Motd.MaxLength or 200
+    local len = utf8.len(text)
+    if not len or len > max or #text > 255 then return reply(false, 'sv_err_motd', max) end
+    if text ~= '' then
+        ctx.s.motd = text
+        MySQL.insert('INSERT INTO rsg_society_meta (k, v) VALUES (?, ?) ON DUPLICATE KEY UPDATE v = VALUES(v)', { 'motd:' .. ctx.name, text })
+    else
+        ctx.s.motd = nil
+        MySQL.update('DELETE FROM rsg_society_meta WHERE k = ?', { 'motd:' .. ctx.name })
+    end
+    Soc.Audit(ctx.name, ctx.cid, ctx.who, 'motd', text)
+    return reply(true, 'sv_motd_saved')
+end
+
+--- Gang ranks: add one just below the boss rank / delete one (its members move down).
+function Actions.rank_add(ctx, data)
+    if ctx.s.type ~= 'gang' or not ctx.acc.perms.ranks then return reply(false, 'sv_err_no_permission') end
+    local name, why = cleanRankMeta({ name = data.name, pay = 0 })
+    if not name then return reply(false, why) end
+    local ok, res = Soc.AddRank(ctx.name, name)
+    if not ok then return reply(false, res) end
+    Soc.Audit(ctx.name, ctx.cid, ctx.who, 'rank_add', name)
+    return reply(true, 'sv_rank_added', name)
+end
+
+function Actions.rank_delete(ctx, data)
     if ctx.s.type ~= 'gang' or not ctx.acc.perms.ranks then return reply(false, 'sv_err_no_permission') end
     local level = math.floor(tonumber(data.level) or -1)
-    local rank = Soc.Ranks[ctx.name] and Soc.Ranks[ctx.name][level]
-    if not rank then return reply(false, 'sv_err_bad_rank') end
+    local grade = Soc.GradeOf(ctx.name, level)
+    if not grade or grade.boss then return reply(false, 'sv_err_bad_rank') end
     if not (level < ctx.acc.level or (Config.AllowEqualRank and ctx.acc.boss and level <= ctx.acc.level)) then return reply(false, 'sv_err_outranked') end
-
-    local name = type(data.name) == 'string' and data.name:gsub('[%c<>]', ''):gsub('^%s+', ''):gsub('%s+$', '') or ''
-    if #name < 2 or #name > 24 then return reply(false, 'sv_err_rank_name') end
-    local pay = tonumber(data.pay) or 0
-    if pay ~= pay or pay < 0 or pay > Config.Gang.MaxRankPay then return reply(false, 'sv_err_amount') end
-    local cents = math.floor(pay * 100 + 0.5)
-
-    rank.name, rank.payment = name, cents
-    MySQL.update('UPDATE rsg_society_ranks SET name = ?, payment_cents = ? WHERE society = ? AND level = ?', { name, cents, ctx.name, level })
-    Soc.SyncGangDef(ctx.name)
-    Soc.Audit(ctx.name, ctx.cid, ctx.who, 'rank_edit', ('%s $%.2f'):format(name, cents / 100))
-    return reply(true, 'sv_rank_saved', name)
+    local ok, res = Soc.RemoveRank(ctx.name, level)
+    if not ok then return reply(false, res) end
+    Soc.Audit(ctx.name, ctx.cid, ctx.who, 'rank_delete', grade.name)
+    return reply(true, 'sv_rank_deleted', grade.name)
 end
 
 function Actions.fine(ctx, data)
@@ -488,7 +633,10 @@ function Actions.disband(ctx, data)
 
     local balance = Soc.DisbandGang(ctx.name)
     if balance and balance > 0 and Config.Gang.DisbandPayout == 'leader' then
-        ctx.Player.Functions.AddMoney('cash', balance / 100, 'society-disband')
+        if not ctx.Player.Functions.AddMoney('cash', balance / 100, 'society-disband') then
+            -- the account is already gone, so say so loudly instead of losing the money silently
+            print(('^1[rsg-society] could not pay out $%.2f of disbanded gang %s to %s^7'):format(balance / 100, ctx.name, ctx.cid))
+        end
     end
     if Config.Logging.enabled then
         TriggerEvent('rsg-log:server:CreateLog', Config.Logging.channel, 'Society disbanded', 'red', ('%s disbanded %s'):format(ctx.who, label), false)
@@ -507,6 +655,10 @@ registerCallback('rsg-society:server:act', function(src, name, action, data)
     local ctx, why = guard(src, name)
     if not ctx then return { ok = false, msg = locale(why), closed = why == 'sv_err_no_access' } end
     if Soc.OnCooldown(src) then return { ok = false, msg = locale('sv_err_slow') } end
+    if Config.OnDuty.Enabled and ctx.s.type == 'job' and dutyActions[action] then
+        local job = ctx.Player.PlayerData.job
+        if not (job and job.name == ctx.name and job.onduty) then return { ok = false, msg = locale('sv_err_off_duty') } end
+    end
 
     local res = fn(ctx, data) or { ok = false, msg = locale('sv_err_unknown') }
     if not res.closed and Soc.S[name] then

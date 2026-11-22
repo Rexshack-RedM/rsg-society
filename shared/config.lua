@@ -4,6 +4,9 @@ Config = {}
 -- Set to false and import install.sql by hand to install manually.
 Config.AutoDatabase = true
 
+-- Check GitHub for a newer version on start
+Config.VersionCheck = true
+
 -----------------------------------------------------------------------
 -- General
 -----------------------------------------------------------------------
@@ -17,6 +20,7 @@ Config.InteractDistance = 5.0       -- server-side max distance from a desk for 
 Config.HireDistance = 10.0          -- max distance to a player you hire, invite or fine
 Config.MaxTransaction = 1000000     -- biggest single deposit or withdrawal
 Config.ActionCooldown = 750         -- ms between menu actions per player
+Config.ReadCooldown = 150           -- ms between menu reads per player (opening the menu, loading a tab)
 Config.PageSize = 40                -- rows per page in the ledger, audit log and fine list
 Config.PruneDays = 90               -- on start, delete ledger and audit rows (and settled fines) older than this many days. 0 = keep everything
 Config.AllowEqualRank = true        -- a boss may act on, and assign, ranks up to their own level (false = strictly below)
@@ -63,6 +67,8 @@ Config.Permissions = {
     'audit',     -- read the audit trail
     'ranks',     -- change what each rank may do (and rank names and pay for gangs)
     'settings',  -- gangs: rename, colour, tag
+    'bonus',     -- pay a one-off bonus to an online member out of the account
+    'announce',  -- write the announcement every member sees on the Overview tab
 }
 -- Extra permissions that only exist for gangs. Other scripts (rsg-gangs and so on) check these through the API.
 Config.GangPermissions = {
@@ -80,6 +86,7 @@ Config.GangPermissions = {
 -----------------------------------------------------------------------
 Config.Payroll = {
     Enabled = true,          -- master switch for society-funded payroll
+    TrustedWageCaller = 'rsg-core', -- only this resource may call ProcessWage / RefundWage (they move society money)
     GangInterval = 10,       -- minutes between gang payroll runs
     NotifyEmployee = true,   -- tell the player when their wage was skipped because the account is empty
     NotifyBosses = true,     -- tell online members with the 'payroll' permission (once per run per society)
@@ -98,6 +105,40 @@ Config.Fines = {
     AllowPartial = true,           -- take what the player has now and keep the rest as an unpaid fine
     CollectOnLogin = true,         -- collect unpaid fines when the player's character loads
     CollectOnPayroll = true,       -- ...and on every gang payroll run
+    IssueLimit = 6,                -- most fines one person may issue inside the window below (0 = no limit)
+    IssueWindowMinutes = 10,
+}
+
+-----------------------------------------------------------------------
+-- Money controls
+-----------------------------------------------------------------------
+-- Job societies only: the member must be on duty in that job to use these menu actions.
+Config.OnDuty = {
+    Enabled = false,
+    Actions = { 'deposit', 'withdraw', 'payroll', 'bonus', 'fine', 'transfer_funds' },
+}
+
+-- How much one member may withdraw in any 24 hours (dollars, 0 = no limit).
+Config.Withdraw = {
+    DailyLimit = 0,
+    BossesExempt = true,
+}
+
+-- Bonus: one-off payment from the account to an online member (needs the 'bonus' permission).
+Config.Bonus = {
+    Max = 5000,   -- biggest single bonus (0 = bonuses off)
+}
+
+-- Transfers between society accounts (needs the 'withdraw' permission on the sending side).
+Config.Transfers = {
+    Enabled = false,
+    Max = 100000,
+    SameTypeOnly = true,   -- jobs can only send to jobs, gangs only to gangs
+}
+
+-- The announcement members see on the Overview tab (needs the 'announce' permission to edit).
+Config.Motd = {
+    MaxLength = 200,
 }
 
 -----------------------------------------------------------------------
@@ -149,6 +190,7 @@ Config.Gang = {
     InviteExpireSeconds = 120,
     MaxTagLength = 5,
     MaxRankPay = 1000,           -- highest wage per payroll run a gang boss can set for a rank
+    MaxRanks = 10,               -- most ranks a gang can have (bosses add and delete ranks in the Ranks tab)
     RequireDesk = false,         -- gangs use their menu from anywhere
     RemoteStorage = false,       -- true: the Storage button opens the gang stash anywhere. false: only scripts that call exports['rsg-society']:OpenStorage (for example a strongbox) open it
     DisbandPayout = 'leader',    -- who gets the account balance when a gang is disbanded: 'leader' (as cash) or 'none'
@@ -156,8 +198,8 @@ Config.Gang = {
     DefaultRanks = {
         { name = 'Recruit',   payment = 0, perms = { 'members' } },
         { name = 'Member',    payment = 0, perms = { 'members', 'withdraw', 'equipment', 'storage' } },
-        { name = 'Officer',   payment = 0, perms = { 'members', 'hire', 'fire', 'withdraw', 'deposit', 'equipment', 'storage', 'finance', 'audit' } },
-        { name = 'Co-Leader', payment = 0, perms = { 'members', 'hire', 'fire', 'promote', 'withdraw', 'deposit', 'upgrade', 'bounty', 'equipment', 'storage', 'finance', 'audit' } },
+        { name = 'Officer',   payment = 0, perms = { 'members', 'hire', 'fire', 'withdraw', 'deposit', 'equipment', 'storage', 'finance', 'audit', 'announce' } },
+        { name = 'Co-Leader', payment = 0, perms = { 'members', 'hire', 'fire', 'promote', 'withdraw', 'deposit', 'upgrade', 'bounty', 'equipment', 'storage', 'finance', 'audit', 'announce', 'bonus' } },
         { name = 'Leader',    payment = 0, perms = {}, boss = true },
     },
     Colors = { '#e63946', '#f4a261', '#e9c46a', '#2a9d8f', '#264653', '#8338ec', '#3a86ff', '#ff006e', '#06d6a0', '#adb5bd' },

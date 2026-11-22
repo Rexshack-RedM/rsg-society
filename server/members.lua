@@ -176,7 +176,11 @@ RegisterNetEvent('rsg-society:server:inviteReply', function(accepted)
     local src = source
     local invite = PendingInvites[src]
     PendingInvites[src] = nil
-    if not invite or invite.expires < os.time() then return end
+    if not invite then return end
+    if invite.expires < os.time() then
+        if accepted then Soc.Notify(src, Soc.Label(invite.society), locale('sv_err_invite_gone'), 'error') end
+        return
+    end
     local Target = RSGCore.Functions.GetPlayer(src)
     local s = Soc.S[invite.society]
     if not Target or not s then return end
@@ -187,10 +191,11 @@ RegisterNetEvent('rsg-society:server:inviteReply', function(accepted)
         return
     end
 
-    -- the inviter must still be allowed to invite, and still be close
-    if not From then return end
-    local acc = Soc.Access(From.PlayerData.citizenid, invite.society, From)
-    if not acc or not acc.perms.hire then return end
+    -- the inviter must still be here, still be allowed to invite, and still be allowed to hand out that rank
+    local acc = From and Soc.Access(From.PlayerData.citizenid, invite.society, From)
+    if not acc or not acc.perms.hire or invite.level > Soc.MaxAssignable(acc) then
+        return Soc.Notify(src, Soc.Label(invite.society), locale('sv_err_invite_gone'), 'error')
+    end
     local a, b = GetPlayerPed(invite.from), GetPlayerPed(src)
     if not a or a == 0 or not b or b == 0 or #(GetEntityCoords(a) - GetEntityCoords(b)) > Config.HireDistance then
         return Soc.Notify(src, Soc.Label(invite.society), locale('sv_err_too_far'), 'error')
@@ -229,7 +234,9 @@ end
 local function cleanLabel(label)
     if type(label) ~= 'string' then return nil end
     label = label:gsub('[%c<>]', ''):gsub('^%s+', ''):gsub('%s+$', ''):gsub('%s+', ' ')
-    if #label < Config.Gang.MinNameLength or #label > Config.Gang.MaxNameLength then return nil end
+    -- count characters, not bytes, so names in Cyrillic, Greek or Japanese get the same room as English ones
+    local len = utf8.len(label)
+    if not len or len < Config.Gang.MinNameLength or len > Config.Gang.MaxNameLength then return nil end
     return label
 end
 Soc.CleanLabel = cleanLabel
@@ -273,7 +280,7 @@ function Soc.CreateGang(label, ownerCid, ownerName, opts)
     if Soc.LabelTaken(label) then return false, 'sv_err_gang_taken' end
 
     local base = slug(label)
-    if base == '' then return false, 'sv_err_gang_name' end
+    if base == '' then base = 'gang' end -- a name with no latin letters or digits still gets an internal id (gang, gang_2, ...)
     local name, n = base, 1
     while Soc.S[name] or RSGCore.Shared.Gangs[name] or Soc.JobDef(name) or name == 'none' do
         n = n + 1
@@ -355,6 +362,11 @@ function Soc.DisbandGang(name)
     MySQL.update('DELETE FROM rsg_society_members WHERE society = ?', { name })
     MySQL.update('DELETE FROM rsg_society_locations WHERE society = ?', { name })
     MySQL.update('DELETE FROM rsg_societies WHERE name = ?', { name })
+    MySQL.update('DELETE FROM rsg_society_meta WHERE k = ?', { 'motd:' .. name })
+    -- the internal name can be handed out again, so nothing of the old gang may be left behind for the new one to inherit
+    MySQL.update('DELETE FROM rsg_society_ledger WHERE society = ?', { name })
+    MySQL.update('DELETE FROM rsg_society_audit WHERE society = ?', { name })
+    MySQL.update('DELETE FROM rsg_society_fines WHERE society = ?', { name })
     pcall(function() exports['rsg-core']:RemoveGang(name) end)
     pcall(function() exports['rsg-inventory']:DeleteInventory('society_' .. name) end)
 
@@ -369,6 +381,90 @@ end
 -----------------------------------------------------------------------
 -- Exports
 -----------------------------------------------------------------------
+-----------------------------------------------------------------------
+-- Gang ranks: the level is the position, so adding or removing a rank shifts the ones above it
+-----------------------------------------------------------------------
+local function sortedLevels(name)
+    local levels = {}
+    for level in pairs(Soc.Ranks[name] or {}) do levels[#levels + 1] = level end
+    table.sort(levels)
+    return levels
+end
+
+--- pushes the new rank list to rsg-core and re-applies every online member (their level may have moved)
+local function resyncGang(name)
+    Soc.SyncGangDef(name)
+    for cid in pairs(Soc.Members[name] or {}) do Soc.ApplyMember(cid) end
+end
+
+--- Adds a rank just below the lowest boss rank, so it can never outrank a boss. Returns ok, level | reasonKey.
+function Soc.AddRank(name, rankName)
+    local s = Soc.S[name]
+    if not s or s.type ~= 'gang' then return false, 'sv_err_unknown' end
+    local levels = sortedLevels(name)
+    if #levels >= (Config.Gang.MaxRanks or 10) then return false, 'sv_err_rank_limit' end
+    local at = (levels[#levels] or -1) + 1
+    for _, l in ipairs(levels) do
+        if Soc.Ranks[name][l].boss then at = l break end
+    end
+
+    -- memory first (no yield), so nothing can read half-shifted ranks
+    local ranks, perms = {}, {}
+    for l, r in pairs(Soc.Ranks[name]) do ranks[l >= at and l + 1 or l] = r end
+    for l, p in pairs(Soc.Perms[name] or {}) do perms[l >= at and l + 1 or l] = p end
+    ranks[at] = { name = rankName, payment = 0, boss = false }
+    perms[at] = Soc.ToSet({ 'members' }, 'gang')
+    Soc.Ranks[name], Soc.Perms[name] = ranks, perms
+    for _, m in pairs(Soc.Members[name] or {}) do
+        if m.level >= at then m.level = m.level + 1 end
+    end
+
+    MySQL.update.await('UPDATE rsg_society_ranks SET level = level + 1 WHERE society = ? AND level >= ? ORDER BY level DESC', { name, at })
+    MySQL.update.await('UPDATE rsg_society_perms SET level = level + 1 WHERE society = ? AND level >= ? ORDER BY level DESC', { name, at })
+    MySQL.update.await('UPDATE rsg_society_members SET level = level + 1 WHERE society = ? AND level >= ?', { name, at })
+    MySQL.insert.await('INSERT INTO rsg_society_ranks (society, level, name, payment_cents, is_boss) VALUES (?, ?, ?, 0, 0)', { name, at, rankName })
+    MySQL.insert.await('INSERT INTO rsg_society_perms (society, level, perms) VALUES (?, ?, ?)', { name, at, json.encode({ 'members' }) })
+    resyncGang(name)
+    return true, at
+end
+
+--- Deletes a rank. Its members move one rank down (the lowest rank moves them up). Returns ok, rankName | reasonKey.
+function Soc.RemoveRank(name, level)
+    local s = Soc.S[name]
+    local rank = s and s.type == 'gang' and Soc.Ranks[name] and Soc.Ranks[name][level]
+    if not rank or rank.boss then return false, 'sv_err_bad_rank' end
+    if #sortedLevels(name) <= 2 then return false, 'sv_err_rank_last' end
+    local into = level > 0 and level - 1 or 1
+
+    for _, m in pairs(Soc.Members[name] or {}) do
+        if m.level == level then m.level = into end
+    end
+    for _, m in pairs(Soc.Members[name] or {}) do
+        if m.level > level then m.level = m.level - 1 end
+    end
+    local ranks, perms = {}, {}
+    for l, r in pairs(Soc.Ranks[name]) do
+        if l < level then ranks[l] = r elseif l > level then ranks[l - 1] = r end
+    end
+    for l, p in pairs(Soc.Perms[name] or {}) do
+        if l < level then perms[l] = p elseif l > level then perms[l - 1] = p end
+    end
+    Soc.Ranks[name], Soc.Perms[name] = ranks, perms
+
+    MySQL.update.await('DELETE FROM rsg_society_ranks WHERE society = ? AND level = ?', { name, level })
+    MySQL.update.await('DELETE FROM rsg_society_perms WHERE society = ? AND level = ?', { name, level })
+    MySQL.update.await('UPDATE rsg_society_members SET level = ? WHERE society = ? AND level = ?', { into, name, level })
+    MySQL.update.await('UPDATE rsg_society_members SET level = level - 1 WHERE society = ? AND level > ?', { name, level })
+    MySQL.update.await('UPDATE rsg_society_ranks SET level = level - 1 WHERE society = ? AND level > ? ORDER BY level ASC', { name, level })
+    MySQL.update.await('UPDATE rsg_society_perms SET level = level - 1 WHERE society = ? AND level > ? ORDER BY level ASC', { name, level })
+    resyncGang(name)
+    return true, rank.name
+end
+
+--- AddRank(name, rankName) -> ok, level | reasonKey      RemoveRank(name, level) -> ok, rankName | reasonKey   (gangs only)
+exports('AddRank', function(name, rankName) return Soc.AddRank(name, rankName) end)
+exports('RemoveRank', function(name, level) return Soc.RemoveRank(name, math.floor(tonumber(level) or -1)) end)
+
 --- SetGangInfo(name, { label?, color?, tag? }) -> ok, reasonKey
 exports('SetGangInfo', function(name, data)
     return Soc.SetInfo(name, data, nil, GetInvokingResource() or 'api')

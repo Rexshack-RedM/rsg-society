@@ -2,7 +2,6 @@ local RSGCore = exports['rsg-core']:GetCoreObject()
 
 local uiOpen = false        -- the menu (or an invite) has NUI focus
 local menuOpen = false      -- the full menu is on screen
-local uiFocus = false
 local locations = {}
 local promptIds = {}
 local blips = {}
@@ -11,16 +10,6 @@ local uiStrings
 -----------------------------------------------------------------------
 -- NUI focus with push-to-talk kept alive
 -----------------------------------------------------------------------
-local function applyNuiFocus(enable)
-    if enable then
-        SetNuiFocus(true, true)
-        if Config.AllowPushToTalkWhileOpen then SetNuiFocusKeepInput(true) end
-    else
-        SetNuiFocusKeepInput(false)
-        SetNuiFocus(false, false)
-    end
-end
-
 local function runPttWhitelist()
     DisableAllControlActions(0)
     DisableAllControlActions(1)
@@ -35,16 +24,23 @@ local function runPttWhitelist()
     end
 end
 
-CreateThread(function()
-    while true do
-        if uiFocus and Config.AllowPushToTalkWhileOpen then
-            Wait(0)
-            runPttWhitelist()
-        else
-            Wait(250)
+local function applyNuiFocus(enable)
+    if enable then
+        SetNuiFocus(true, true)
+        if Config.AllowPushToTalkWhileOpen then
+            SetNuiFocusKeepInput(true)
+            CreateThread(function()
+                while uiOpen do
+                    runPttWhitelist()
+                    Wait(0)
+                end
+            end)
         end
+    else
+        SetNuiFocusKeepInput(false)
+        SetNuiFocus(false, false)
     end
-end)
+end
 
 -----------------------------------------------------------------------
 -- Helpers
@@ -72,7 +68,7 @@ end
 
 local function closeUI()
     if not uiOpen then return end
-    uiOpen, menuOpen, uiFocus = false, false, false
+    uiOpen, menuOpen = false, false
     applyNuiFocus(false)
     SendNUIMessage({ action = 'close' })
 end
@@ -80,7 +76,7 @@ end
 local function showUI(payload)
     payload.action = 'open'
     payload.strings = loadUiStrings()
-    uiOpen, uiFocus = true, true
+    uiOpen = true
     applyNuiFocus(true)
     SendNUIMessage(payload)
 end
@@ -256,7 +252,7 @@ end)
 AddEventHandler('onResourceStop', function(resource)
     if resource ~= GetCurrentResourceName() then return end
     if uiOpen then
-        uiOpen, uiFocus = false, false
+        uiOpen = false
         applyNuiFocus(false)
     end
     clearDesks()

@@ -14,6 +14,7 @@ local function payPlayer(Player, dollars, note)
     end
     return Player.Functions.AddMoney('cash', dollars, note) and true or false
 end
+Soc.PayPlayer = payPlayer
 
 -----------------------------------------------------------------------
 -- Payroll
@@ -39,6 +40,8 @@ end
 --- Called by rsg-core's paycheck loop for every wage. Answers 'paid' (society paid, core hands the money to the player),
 --- 'skipped' (society can't afford it, nobody is paid) or 'unmanaged' (not a society job, core pays as it always did).
 exports('ProcessWage', function(src, jobName, amount)
+    -- this moves society money, so only the paycheck loop of rsg-core may call it
+    if GetInvokingResource() ~= Config.Payroll.TrustedWageCaller then return 'unmanaged' end
     if not Soc.Ready or not Config.Payroll.Enabled then return 'unmanaged' end
     local s = Soc.S[jobName]
     if not s or s.type ~= 'job' or not s.payroll then return 'unmanaged' end
@@ -58,6 +61,7 @@ end)
 
 --- Core calls this when it could not hand over a wage that ProcessWage already took from the account.
 exports('RefundWage', function(jobName, amount)
+    if GetInvokingResource() ~= Config.Payroll.TrustedWageCaller then return false end
     local s = Soc.S[jobName]
     local cents = Soc.ToCents(amount)
     if not s or not cents then return false end
@@ -70,9 +74,11 @@ function Soc.RunGangPayroll(name)
     local s = Soc.S[name]
     if not s or s.type ~= 'gang' then return 0, 0 end
     local due = {}
+    local grades = {}
+    for _, g in ipairs(Soc.Grades(name)) do grades[g.level] = g end
     for cid, m in pairs(Soc.Members[name] or {}) do
         local Player = RSGCore.Functions.GetPlayerByCitizenId(cid)
-        local g = Soc.GradeOf(name, m.level)
+        local g = grades[m.level]
         if Player and g and g.payment > 0 then due[#due + 1] = { Player = Player, level = m.level, cents = g.payment } end
     end
     table.sort(due, function(a, b) return a.level > b.level end)
@@ -130,8 +136,10 @@ local function takeFromPlayer(Player, cents)
     return taken
 end
 
+local collecting = {} -- [citizenid] = true while a collection runs
+
 --- Collects every unpaid fine of an online player. Returns cents collected.
-function Soc.CollectFines(Player)
+local function collectFines(Player)
     local cid = Player.PlayerData.citizenid
     local rows = MySQL.query.await("SELECT id, society, amount_cents, paid_cents FROM rsg_society_fines WHERE citizenid = ? AND status = 'unpaid' ORDER BY id", { cid }) or {}
     local collected = 0
@@ -157,10 +165,44 @@ function Soc.CollectFines(Player)
     return collected
 end
 
+--- Only one collection per player at a time: the queries yield, so two overlapping runs (login, payroll tick,
+--- /payfines, a fresh fine) used to read the same unpaid fine and charge the player twice.
+function Soc.CollectFines(Player)
+    local cid = Player.PlayerData.citizenid
+    if collecting[cid] then return 0 end
+    collecting[cid] = true
+    local ok, result = pcall(collectFines, Player)
+    collecting[cid] = nil
+    if not ok then
+        print(('^1[rsg-society] collecting fines for %s failed: %s^7'):format(cid, tostring(result)))
+        return 0
+    end
+    return result
+end
+
+function Soc.IsCollecting(cid) return collecting[cid] == true end
+
 --- Total still owed by a citizen (cents) and the number of open fines
 function Soc.Owed(cid)
     local row = MySQL.single.await("SELECT COUNT(*) AS n, COALESCE(SUM(amount_cents - paid_cents), 0) AS owed FROM rsg_society_fines WHERE citizenid = ? AND status = 'unpaid'", { cid })
     return row and tonumber(row.owed) or 0, row and tonumber(row.n) or 0
+end
+
+-- A fine takes cash and bank at once, so one rogue member with the 'fines' permission could empty a player in seconds:
+-- cap how many fines one person can issue inside a window.
+local issueLog = {} -- [issuer citizenid] = { os.time(), ... }
+local function issueLimited(cid)
+    local limit = Config.Fines.IssueLimit or 0
+    if limit <= 0 or not cid then return false end
+    local now, window = os.time(), (Config.Fines.IssueWindowMinutes or 10) * 60
+    local keep = {}
+    for _, at in ipairs(issueLog[cid] or {}) do
+        if now - at < window then keep[#keep + 1] = at end
+    end
+    issueLog[cid] = keep
+    if #keep >= limit then return true end
+    keep[#keep + 1] = now
+    return false
 end
 
 --- Issues a fine and collects it at once when the player is online.
@@ -171,6 +213,7 @@ function Soc.IssueFine(issuer, targetCid, name, amount, reason)
     if not s then return false, 'sv_err_unknown' end
     local cents = Soc.ToCents(amount)
     if not cents or cents < Config.Fines.Min * 100 or cents > Config.Fines.Max * 100 then return false, 'sv_err_fine_amount' end
+    if issuer and issuer.cid and issueLimited(issuer.cid) then return false, 'sv_err_fine_limit' end
     reason = type(reason) == 'string' and reason:gsub('[%c<>]', ''):gsub('^%s+', ''):gsub('%s+$', '') or ''
     if #reason > 200 then reason = reason:sub(1, 200) end
 
@@ -277,6 +320,7 @@ end)
 RSGCore.Commands.Add('payfines', locale('cmd_payfines_desc'), {}, false, function(source)
     local Player = RSGCore.Functions.GetPlayer(source)
     if not Player then return end
+    if Soc.IsCollecting(Player.PlayerData.citizenid) then return Soc.Notify(source, locale('sv_fines_title'), locale('sv_err_slow'), 'error') end
     local owed = Soc.Owed(Player.PlayerData.citizenid)
     if owed <= 0 then return Soc.Notify(source, locale('sv_fines_title'), locale('sv_fines_none'), 'success') end
     local collected = Soc.CollectFines(Player)

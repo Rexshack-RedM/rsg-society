@@ -28,7 +28,7 @@ local function importFunds()
     if not tableExists('management_funds') then return gangFunds end
     local imported = 0
     for _, row in ipairs(MySQL.query.await('SELECT job_name, amount, type FROM management_funds') or {}) do
-        local cents = math.floor((tonumber(row.amount) or 0) * 100)
+        local cents = math.floor((tonumber(row.amount) or 0) * 100 + 0.5)
         if row.type == 'gang' then
             gangFunds[row.job_name] = cents
         elseif not Soc.JobExists(row.job_name) then
@@ -115,7 +115,7 @@ local function importRsgGangs()
         if Soc.S[g.name] then
             say(('rsg-gangs gang "%s" skipped: a society with that name already exists'):format(g.name))
         else
-            local cents = math.floor((tonumber(g.bank) or 0) * 100)
+            local cents = math.floor((tonumber(g.bank) or 0) * 100 + 0.5)
             Soc.RegisterRow(g.name, 'gang', g.label, { color = g.color, tag = g.tag, owner = g.owner, balance = cents, payroll = Config.Payroll.DefaultGangPayroll, await = true })
             Soc.Members[g.name] = {}
             Soc.SeedRanks(g.name, Config.Gang.DefaultRanks, true)
@@ -157,7 +157,7 @@ function Soc.Migrate(force)
         changed = true
     elseif Config.Migration.ImportCoreGangs and tableExists('management_funds') then
         for _, row in ipairs(MySQL.query.await("SELECT job_name, amount FROM management_funds WHERE type = 'gang'") or {}) do
-            gangFunds[row.job_name] = math.floor((tonumber(row.amount) or 0) * 100)
+            gangFunds[row.job_name] = math.floor((tonumber(row.amount) or 0) * 100 + 0.5)
         end
     end
     if Config.Migration.ImportCoreGangs and (force or getMeta('migrated_core_gangs') ~= 'done') then

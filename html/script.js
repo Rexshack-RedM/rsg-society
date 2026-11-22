@@ -73,7 +73,7 @@ function makeDd(options, value, onChange, small) {
     dd.dataset.value = value === undefined || value === null ? '' : String(value);
     const label = h('div', { class: 'dd-value' });
     dd.appendChild(label);
-    dd.appendChild(h('i', { class: 'fa-solid fa-chevron-down arrow' }));
+    dd.appendChild(h('span', { class: 'arrow' }));
 
     function refresh() {
         const cur = options.find((o) => String(o.value) === dd.dataset.value);
@@ -128,12 +128,23 @@ function confirmModal(title, text, onYes, danger) {
     ]);
 }
 
+/* ---------------------------------------------------------------- clipboard */
+function copyText(text) {
+    const ta = h('textarea', { style: 'position:fixed;left:-9999px;top:0' });
+    ta.value = text;
+    document.body.appendChild(ta);
+    ta.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+    ta.remove();
+    return ok;
+}
+
 /* ---------------------------------------------------------------- actions */
 async function act(action, data, quiet) {
     const res = await api('act', { society: S.view.name, action, data: data || {} });
     if (res.msg && !quiet) toast(res.msg, res.ok ? 'success' : 'error');
     if (res.view) { S.view = res.view; renderHeader(); renderTabs(); }
-    if (res.closed) { return res; }
     return res;
 }
 
@@ -155,6 +166,7 @@ function tabList() {
     if (has('finance')) list.push('finance');
     if (has('fines') || has('finevoid')) list.push('fines');
     if (has('audit')) list.push('audit');
+    if (has('audit')) list.push('stash');
     if (S.view.type === 'gang') list.push('settings');
     return list;
 }
@@ -175,10 +187,10 @@ async function loadTab() {
     c.innerHTML = '';
     c.appendChild(h('div', { class: 'empty', text: t('ui_loading') }));
     const tab = S.tab;
-    const res = await fetchTab(tab);
+    const res = await fetchTab(tab, tab === 'finance' ? { kind: S.ledgerKind || '' } : undefined);
     if (S.tab !== tab) return;
     if (!res.ok) { c.innerHTML = ''; c.appendChild(h('div', { class: 'empty', text: res.msg || t('ui_no_answer') })); return; }
-    const fn = { members: renderMembers, ranks: renderRanks, finance: renderFinance, fines: renderFines, audit: renderAudit, settings: renderSettings }[tab];
+    const fn = { members: renderMembers, ranks: renderRanks, finance: renderFinance, fines: renderFines, audit: renderAudit, stash: renderStash, settings: renderSettings }[tab];
     c.innerHTML = '';
     fn(res, c);
 }
@@ -186,15 +198,32 @@ async function loadTab() {
 function refreshTab() { return loadTab(); }
 
 /* ---------------------------------------------------------------- overview */
-function amountModal(title, action) {
-    const input = h('input', { class: 'input', type: 'number', min: '0.01', step: '0.01', placeholder: t('ui_amount') });
+function amountModal(title, action, extra, cap) {
+    const input = h('input', { class: 'input', type: 'number', min: '0.01', max: S.view.maxTransaction || undefined, step: '0.01', placeholder: t('ui_amount') });
     const submit = async () => {
-        const res = await act(action, { amount: parseFloat(input.value) });
+        const res = await act(action, Object.assign({ amount: parseFloat(input.value) }, extra || {}));
         if (res.ok) { closeModal(); refreshTab(); }
     };
     input.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
-    openModal(title, h('div', { class: 'field' }, h('label', { text: t('ui_amount') }), input), [
+    const field = h('div', { class: 'field' }, h('label', { text: t('ui_amount') }), input);
+    if (cap > 0) {
+        field.appendChild(h('button', { class: 'wood-btn small', style: 'margin-top:8px', text: t('ui_max') + ' ' + money(cap), onClick: () => { input.value = cap.toFixed(2); input.focus(); } }));
+    }
+    openModal(title, field, [
         { label: t('ui_confirm'), onClick: submit },
+        { label: t('ui_cancel'), cls: 'muted-btn' },
+    ]);
+}
+
+function motdModal() {
+    const input = h('input', { class: 'input', maxlength: '200', value: S.view.motd || '', placeholder: t('ui_motd') });
+    const submit = async () => {
+        const res = await act('motd', { text: input.value });
+        if (res.ok) { closeModal(); renderOverview(); }
+    };
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
+    openModal(t('ui_motd_edit'), h('div', { class: 'field' }, h('label', { text: t('ui_motd') }), input), [
+        { label: t('ui_save'), onClick: submit },
         { label: t('ui_cancel'), cls: 'muted-btn' },
     ]);
 }
@@ -214,12 +243,14 @@ function renderOverview() {
     stats.appendChild(h('div', { class: 'stat' }, h('div', { class: 'label', text: t('ui_payroll') }),
         h('div', { class: 'value ' + (v.payroll ? 'ok' : 'bad'), text: v.payroll ? t('ui_on') : t('ui_off') })));
     c.appendChild(stats);
+    if (v.motd) c.appendChild(h('div', { class: 'notice' }, h('b', { text: t('ui_motd') + ': ' }), v.motd));
 
     const bar = h('div', { class: 'toolbar' });
     const left = h('div', { class: 'actions', style: 'display:flex;gap:8px;flex-wrap:wrap' });
     if (has('deposit')) left.appendChild(h('button', { class: 'wood-btn', text: t('ui_deposit'), onClick: () => amountModal(t('ui_deposit'), 'deposit') }));
-    if (has('withdraw')) left.appendChild(h('button', { class: 'wood-btn', text: t('ui_withdraw'), onClick: () => amountModal(t('ui_withdraw'), 'withdraw') }));
+    if (has('withdraw')) left.appendChild(h('button', { class: 'wood-btn', text: t('ui_withdraw'), onClick: () => amountModal(t('ui_withdraw'), 'withdraw', null, Math.min(v.balance || 0, v.maxTransaction || Infinity)) }));
     if (has('storage') && v.remoteStorage) left.appendChild(h('button', { class: 'wood-btn', text: t('ui_storage'), onClick: () => act('storage') }));
+    if (has('announce')) left.appendChild(h('button', { class: 'wood-btn', text: t('ui_motd_edit'), onClick: motdModal }));
     bar.appendChild(left);
     c.appendChild(bar);
     c.appendChild(h('div', { class: 'italic', text: t('ui_overview_hint') }));
@@ -250,42 +281,82 @@ function hireModal(grades) {
     });
 }
 
+function memberRow(m, data) {
+    const actions = h('div', { class: 'actions' });
+    if (m.self) actions.appendChild(h('span', { class: 'badge', text: t('ui_you') }));
+    if (m.canManage && data.canPromote) {
+        actions.appendChild(makeDd(data.assignable.map((g) => ({ value: g.level, label: g.name })), m.level, async (lvl) => {
+            const res = await act('setrank', { cid: m.cid, level: parseInt(lvl, 10) });
+            refreshTab();
+            return res;
+        }, true));
+    } else {
+        actions.appendChild(h('span', { class: 'badge ' + (m.boss ? 'boss' : ''), text: m.grade }));
+    }
+    if (data.canBonus && !m.self && m.online) {
+        actions.appendChild(h('button', { class: 'wood-btn small', text: t('ui_bonus'), onClick: () =>
+            amountModal(t('ui_bonus') + ' - ' + m.name, 'bonus', { cid: m.cid }) }));
+    }
+    if (m.canManage && data.canTransfer) {
+        actions.appendChild(h('button', { class: 'wood-btn small', text: t('ui_transfer'), onClick: () =>
+            confirmModal(t('ui_transfer'), t('ui_transfer_confirm', m.name), async () => { await act('transfer', { cid: m.cid }); refreshTab(); }) }));
+    }
+    if (m.canManage && data.canFire) {
+        actions.appendChild(h('button', { class: 'wood-btn small danger', text: t('ui_fire'), onClick: () =>
+            confirmModal(t('ui_fire'), t('ui_fire_confirm', m.name), async () => { await act('fire', { cid: m.cid }); refreshTab(); }, true) }));
+    }
+    return h('div', { class: 'row' },
+        h('div', { class: 'dot' + (m.online ? ' on' : ''), title: m.online ? t('ui_online') : t('ui_offline') }),
+        h('div', { class: 'main' }, h('div', { class: 'name', text: m.name }), h('div', { class: 'sub', text: m.grade + ' · ' + m.cid })),
+        actions);
+}
+
 function renderMembers(data, c) {
     const bar = h('div', { class: 'toolbar' }, h('div', { class: 'grow muted', text: t('ui_member_count', data.members.length) }));
     if (data.canHire) bar.appendChild(h('button', { class: 'wood-btn', text: S.view.type === 'gang' ? t('ui_invite') : t('ui_hire'), onClick: () => hireModal(data.assignable) }));
     c.appendChild(bar);
     if (!data.members.length) c.appendChild(h('div', { class: 'empty', text: t('ui_no_members') }));
 
-    data.members.forEach((m) => {
-        const actions = h('div', { class: 'actions' });
-        if (m.self) actions.appendChild(h('span', { class: 'badge', text: t('ui_you') }));
-        if (m.canManage && data.canPromote) {
-            actions.appendChild(makeDd(data.assignable.map((g) => ({ value: g.level, label: g.name })), m.level, async (lvl) => {
-                const res = await act('setrank', { cid: m.cid, level: parseInt(lvl, 10) });
-                refreshTab();
-                return res;
-            }, true));
-        } else {
-            actions.appendChild(h('span', { class: 'badge ' + (m.boss ? 'boss' : ''), text: m.grade }));
-        }
-        if (m.canManage && data.canTransfer) {
-            actions.appendChild(h('button', { class: 'wood-btn small', text: t('ui_transfer'), onClick: () =>
-                confirmModal(t('ui_transfer'), t('ui_transfer_confirm', m.name), async () => { await act('transfer', { cid: m.cid }); refreshTab(); }) }));
-        }
-        if (m.canManage && data.canFire) {
-            actions.appendChild(h('button', { class: 'wood-btn small danger', text: t('ui_fire'), onClick: () =>
-                confirmModal(t('ui_fire'), t('ui_fire_confirm', m.name), async () => { await act('fire', { cid: m.cid }); refreshTab(); }, true) }));
-        }
-        c.appendChild(h('div', { class: 'row' },
-            h('div', { class: 'dot' + (m.online ? ' on' : ''), title: m.online ? t('ui_online') : t('ui_offline') }),
-            h('div', { class: 'main' }, h('div', { class: 'name', text: m.name }), h('div', { class: 'sub', text: m.grade + ' · ' + m.cid })),
-            actions));
-    });
+    let query = '', onlyOnline = false;
+    const list = h('div');
+    const draw = () => {
+        list.innerHTML = '';
+        const q = query.trim().toLowerCase();
+        data.members
+            .filter((m) => (!onlyOnline || m.online) && (!q || (m.name + ' ' + m.cid + ' ' + m.grade).toLowerCase().includes(q)))
+            .forEach((m) => list.appendChild(memberRow(m, data)));
+    };
+    if (data.members.length > 6) {
+        const search = h('input', { class: 'input', placeholder: t('ui_search'), style: 'flex:1' });
+        search.addEventListener('input', () => { query = search.value; draw(); });
+        const chip = h('div', { class: 'chip', text: t('ui_only_online') });
+        chip.addEventListener('click', () => { onlyOnline = !onlyOnline; chip.classList.toggle('on', onlyOnline); draw(); });
+        c.appendChild(h('div', { class: 'toolbar' }, search, chip));
+    }
+    c.appendChild(list);
+    draw();
 }
 
 /* ---------------------------------------------------------------- ranks */
+function rankAddModal() {
+    const input = h('input', { class: 'input', maxlength: '24', placeholder: t('ui_rank') });
+    const submit = async () => {
+        const res = await act('rank_add', { name: input.value });
+        if (res.ok) { closeModal(); refreshTab(); }
+    };
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
+    openModal(t('ui_rank_add'), h('div', { class: 'field' }, h('label', { text: t('ui_rank') }), input), [
+        { label: t('ui_confirm'), onClick: submit },
+        { label: t('ui_cancel'), cls: 'muted-btn' },
+    ]);
+}
+
 function renderRanks(data, c) {
     c.appendChild(h('div', { class: 'notice', text: data.gang ? t('ui_ranks_hint_gang') : t('ui_ranks_hint_job') }));
+    if (data.canEditRanks && data.count < data.maxRanks) {
+        c.appendChild(h('div', { class: 'toolbar' }, h('div', { class: 'grow' }),
+            h('button', { class: 'wood-btn', text: t('ui_rank_add'), onClick: rankAddModal })));
+    }
     data.grades.slice().sort((a, b) => b.level - a.level).forEach((g) => {
         const on = new Set(g.perms);
         const card = h('div', { class: 'row', style: 'display:block' });
@@ -302,6 +373,10 @@ function renderRanks(data, c) {
             head.appendChild(h('span', { class: 'muted', text: t('ui_pay') + ' ' + money(g.pay) }));
         }
         if (g.boss) head.appendChild(h('span', { class: 'badge boss', text: t('ui_boss') }));
+        if (g.deletable) {
+            head.appendChild(h('button', { class: 'wood-btn small danger', style: 'margin-left:auto', text: t('ui_rank_delete'), onClick: () =>
+                confirmModal(t('ui_rank_delete'), t('ui_rank_delete_confirm', g.name), async () => { await act('rank_delete', { level: g.level }); refreshTab(); }, true) }));
+        }
         card.appendChild(head);
 
         if (g.boss) {
@@ -318,11 +393,11 @@ function renderRanks(data, c) {
             if (g.editable) {
                 card.appendChild(h('div', { style: 'margin-top:10px;text-align:right' },
                     h('button', { class: 'wood-btn small', text: t('ui_save'), onClick: async () => {
-                        if (nameInput) {
-                            const m = await act('rankmeta', { level: g.level, name: nameInput.value, pay: parseFloat(payInput.value) || 0 });
-                            if (!m.ok) return;
-                        }
-                        await act('perms', { level: g.level, perms: Array.from(on) });
+                        // one request: the server checks the name, the wage and the permissions together
+                        const body = { level: g.level, perms: Array.from(on) };
+                        if (nameInput) body.meta = { name: nameInput.value, pay: parseFloat(payInput.value) || 0 };
+                        const res = await act('perms', body);
+                        if (res.ok) refreshTab();
                     } })));
             }
         }
@@ -331,7 +406,7 @@ function renderRanks(data, c) {
 }
 
 /* ---------------------------------------------------------------- finance */
-const KIND_CLASS = { deposit: 'good', withdraw: 'warn', payroll: '', fine: 'good', refund: '', api: '', admin: 'warn', migration: '' };
+const KIND_CLASS = { deposit: 'good', withdraw: 'warn', payroll: '', fine: 'good', refund: '', api: '', admin: 'warn', migration: '', bonus: 'warn', transfer: '' };
 
 function ledgerRow(r) {
     return h('div', { class: 'row' },
@@ -343,15 +418,48 @@ function ledgerRow(r) {
             h('div', { class: 'sub', text: money(r.balance) })));
 }
 
-function moreButton(c, fetcher) {
-    const btn = h('button', { class: 'wood-btn muted-btn', style: 'display:block;margin:10px auto', text: t('ui_load_more'), onClick: async () => {
-        btn.disabled = true;
-        const more = await fetcher();
-        btn.remove();
-        if (more && more.length) more[more.length - 1].more && c.appendChild(btn);
-    } });
-    c.appendChild(btn);
-    return btn;
+/** A page list with a "load more" button. Rows carry an id; the next page is asked for with { before: lastId }. */
+function pager(c, tab, first, rowsKey, render) {
+    const list = h('div'); c.appendChild(list);
+    let last = 0;
+    const append = (rows) => rows.forEach((r) => { list.appendChild(render(r)); last = r.id; });
+    append(first[rowsKey]);
+    const addMore = (more) => {
+        if (!more) return;
+        const btn = h('button', { class: 'wood-btn muted-btn', style: 'display:block;margin:10px auto', text: t('ui_load_more'), onClick: async () => {
+            btn.disabled = true;
+            const res = await fetchTab(tab, { before: last, kind: tab === 'finance' ? (S.ledgerKind || '') : undefined });
+            if (res.ok) { btn.remove(); append(res[rowsKey]); addMore(res.more); }
+            else { btn.disabled = false; toast(res.msg, 'error'); }
+        } });
+        c.appendChild(btn);
+    };
+    addMore(first.more);
+}
+
+const LEDGER_KINDS = ['deposit', 'withdraw', 'payroll', 'fine', 'bonus', 'transfer', 'refund', 'api', 'admin', 'migration'];
+
+function transferModal(data) {
+    const body = h('div');
+    const to = makeDd(data.transferTargets.map((x) => ({ value: x.name, label: x.label })), '', null, false);
+    const amount = h('input', { class: 'input', type: 'number', step: '0.01', min: '0.01', max: data.transferMax || undefined, placeholder: t('ui_amount') });
+    body.appendChild(h('div', { class: 'field' }, h('label', { text: t('ui_to_society') }), to));
+    body.appendChild(h('div', { class: 'field' }, h('label', { text: t('ui_amount') }), amount));
+    openModal(t('ui_transfer_funds'), body, [
+        { label: t('ui_confirm'), onClick: async () => {
+            if (ddValue(to) === '') return;
+            const res = await act('transfer_funds', { to: ddValue(to), amount: parseFloat(amount.value) });
+            if (res.ok) { closeModal(); refreshTab(); }
+        } },
+        { label: t('ui_cancel'), cls: 'muted-btn' },
+    ]);
+}
+
+function ledgerCsv(rows) {
+    const esc = (v) => '"' + String(v === undefined || v === null ? '' : v).replace(/"/g, '""') + '"';
+    const lines = [['date', 'type', 'actor', 'note', 'amount', 'balance'].map(esc).join(',')];
+    rows.forEach((r) => lines.push([r.date, r.kind, r.actor, r.note, r.amount.toFixed(2), r.balance.toFixed(2)].map(esc).join(',')));
+    return lines.join('\n');
 }
 
 function renderFinance(data, c) {
@@ -363,7 +471,8 @@ function renderFinance(data, c) {
     const bar = h('div', { class: 'toolbar' });
     const left = h('div', { style: 'display:flex;gap:8px;flex-wrap:wrap' });
     if (data.canDeposit) left.appendChild(h('button', { class: 'wood-btn', text: t('ui_deposit'), onClick: () => amountModal(t('ui_deposit'), 'deposit') }));
-    if (data.canWithdraw) left.appendChild(h('button', { class: 'wood-btn', text: t('ui_withdraw'), onClick: () => amountModal(t('ui_withdraw'), 'withdraw') }));
+    if (data.canWithdraw) left.appendChild(h('button', { class: 'wood-btn', text: t('ui_withdraw'), onClick: () => amountModal(t('ui_withdraw'), 'withdraw', null, Math.min(data.balance, data.max)) }));
+    if (data.transferTargets && data.transferTargets.length) left.appendChild(h('button', { class: 'wood-btn', text: t('ui_transfer_funds'), onClick: () => transferModal(data) }));
     bar.appendChild(left);
     const sw = h('div', { class: 'switch' + (data.payroll ? ' on' : '') + (data.canPayroll ? '' : ' locked') },
         h('div', { class: 'track' }), h('span', { text: t('ui_payroll') }));
@@ -382,21 +491,16 @@ function renderFinance(data, c) {
     }
 
     c.appendChild(h('div', { class: 'section-title', text: t('ui_ledger') }));
+    const loaded = [];
+    const filter = makeDd([{ value: '', label: t('ui_filter_all') }].concat(LEDGER_KINDS.map((k) => ({ value: k, label: t('ui_kind_' + k) }))),
+        S.ledgerKind || '', (v) => { S.ledgerKind = v; refreshTab(); }, true);
+    c.appendChild(h('div', { class: 'toolbar' }, filter, h('div', { class: 'grow' }),
+        h('button', { class: 'wood-btn small muted-btn', text: t('ui_copy_csv'), onClick: () => {
+            const ok = copyText(ledgerCsv(loaded));
+            toast(ok ? t('ui_copied') : t('ui_no_answer'), ok ? 'success' : 'error');
+        } })));
     if (!data.ledger.length) c.appendChild(h('div', { class: 'empty', text: t('ui_ledger_empty') }));
-    const list = h('div'); c.appendChild(list);
-    let last = 0;
-    const append = (rows) => rows.forEach((r) => { list.appendChild(ledgerRow(r)); last = r.id; });
-    append(data.ledger);
-    const addMore = (more) => {
-        if (!more) return;
-        const btn = h('button', { class: 'wood-btn muted-btn', style: 'display:block;margin:10px auto', text: t('ui_load_more'), onClick: async () => {
-            btn.remove();
-            const res = await fetchTab('finance', { before: last });
-            if (res.ok) { append(res.ledger); addMore(res.more); }
-        } });
-        c.appendChild(btn);
-    };
-    addMore(data.more);
+    pager(c, 'finance', data, 'ledger', (r) => { loaded.push(r); return ledgerRow(r); });
 }
 
 /* ---------------------------------------------------------------- fines */
@@ -445,20 +549,7 @@ function renderFines(data, c) {
     if (data.canIssue && data.enabled) bar.appendChild(h('button', { class: 'wood-btn', text: t('ui_issue_fine'), onClick: fineModal }));
     c.appendChild(bar);
     if (!data.fines.length) c.appendChild(h('div', { class: 'empty', text: t('ui_fines_empty') }));
-    const list = h('div'); c.appendChild(list);
-    let last = 0;
-    const append = (rows) => rows.forEach((f) => { list.appendChild(fineRow(f, data.canVoid)); last = f.id; });
-    append(data.fines);
-    const addMore = (more) => {
-        if (!more) return;
-        const btn = h('button', { class: 'wood-btn muted-btn', style: 'display:block;margin:10px auto', text: t('ui_load_more'), onClick: async () => {
-            btn.remove();
-            const res = await fetchTab('fines', { before: last });
-            if (res.ok) { append(res.fines); addMore(res.more); }
-        } });
-        c.appendChild(btn);
-    };
-    addMore(data.more);
+    pager(c, 'fines', data, 'fines', (f) => fineRow(f, data.canVoid));
 }
 
 /* ---------------------------------------------------------------- audit */
@@ -472,20 +563,20 @@ function auditRow(r) {
 
 function renderAudit(data, c) {
     if (!data.rows.length) c.appendChild(h('div', { class: 'empty', text: t('ui_audit_empty') }));
-    const list = h('div'); c.appendChild(list);
-    let last = 0;
-    const append = (rows) => rows.forEach((r) => { list.appendChild(auditRow(r)); last = r.id; });
-    append(data.rows);
-    const addMore = (more) => {
-        if (!more) return;
-        const btn = h('button', { class: 'wood-btn muted-btn', style: 'display:block;margin:10px auto', text: t('ui_load_more'), onClick: async () => {
-            btn.remove();
-            const res = await fetchTab('audit', { before: last });
-            if (res.ok) { append(res.rows); addMore(res.more); }
-        } });
-        c.appendChild(btn);
-    };
-    addMore(data.more);
+    pager(c, 'audit', data, 'rows', auditRow);
+}
+
+/* ---------------------------------------------------------------- storage log */
+function renderStash(data, c) {
+    if (!data.rows.length) { c.appendChild(h('div', { class: 'empty', text: t('ui_stash_empty') })); return; }
+    data.rows.forEach((r) => {
+        const took = r.action === 'take';
+        c.appendChild(h('div', { class: 'row' },
+            h('div', { class: 'main' },
+                h('div', { class: 'name' }, h('span', { class: 'badge ' + (took ? 'warn' : 'good'), text: took ? t('ui_stash_take') : t('ui_stash_put') }), ' ', r.name),
+                h('div', { class: 'sub', text: r.time ? new Date(r.time * 1000).toLocaleString() : '' })),
+            h('div', { text: r.amount + 'x ' + r.item })));
+    });
 }
 
 /* ---------------------------------------------------------------- settings (gangs) */
@@ -539,10 +630,19 @@ function renderCreate(create) {
 
 /* ---------------------------------------------------------------- invite */
 function showInvite(inv) {
-    openModal(t('ui_invite_title'), h('p', { text: t('ui_invite_text', inv.from, inv.society) }), [
+    const body = h('p', { text: t('ui_invite_text', inv.from, inv.society) });
+    openModal(t('ui_invite_title'), body, [
         { label: t('ui_accept'), onClick: () => { closeModal(); api('inviteReply', { accepted: true }); } },
         { label: t('ui_decline'), cls: 'muted-btn', onClick: () => { closeModal(); api('inviteReply', { accepted: false }); } },
     ]);
+    const ms = (Number(inv.seconds) || 0) * 1000;
+    if (ms > 0) {
+        setTimeout(() => {
+            if (!$('modal-body').contains(body)) return; // already answered, or another window is open now
+            closeModal();
+            api('inviteReply', { accepted: false }); // releases the screen when only the invite was showing
+        }, ms);
+    }
 }
 
 /* ---------------------------------------------------------------- window messages */
@@ -551,6 +651,7 @@ function openMenu(msg) {
     document.body.classList.remove('invite-only');
     $('root').classList.remove('hidden');
     S.tab = 'overview';
+    S.ledgerKind = '';
     if (msg.create) { S.view = null; renderCreate(msg.create); return; }
     S.view = msg.view;
     renderHeader(); renderTabs(); renderOverview();

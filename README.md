@@ -1,4 +1,4 @@
-# rsg-society 3.1.0
+# rsg-society 3.2.0
 
 One resource for everything a job or gang organisation needs: members and ranks, permissions, a bank account, payroll, shared storage, fines and a full audit trail, plus an API so other scripts can plug in.
 
@@ -15,6 +15,12 @@ Dependencies: `rsg-core` (3.5.0+), `rsg-inventory`, `oxmysql`. No ox_lib. Full r
 - **Storage.** One shared stash per society through rsg-inventory.
 - **Audit trail.** Every action is written to the database (who, what, whom, when).
 - **Gangs.** Players found a gang (cost configurable), invite members, set ranks, rename, recolour, transfer leadership, disband.
+- **Bonuses and announcements.** `bonus` pays an online member a one-off amount from the account; `announce` sets a message of the day shown on the overview.
+- **Money controls (off by default).** On-duty requirement for finance actions, daily withdrawal limit, transfers between societies.
+- **Ledger filter and CSV.** Filter by entry kind; "Copy CSV" copies the shown rows to the clipboard (the NUI cannot save files).
+- **Members search.** Name search and an online-only filter on long member lists.
+- **Custom gang ranks.** Add and delete ranks (up to `Gang.MaxRanks`).
+- **Storage log tab.** Who put in or took out which item (needs `audit`).
 - **Import.** Balances from `management_funds`, core gangs, and rsg-gangs data are imported once, automatically.
 - **NUI** in the leather-and-gold style. Push-to-talk keeps working while it is open.
 
@@ -32,14 +38,20 @@ Dependencies: `rsg-core` (3.5.0+), `rsg-inventory`, `oxmysql`. No ox_lib. Full r
 | `Keybind`, `UseKeyMapping`, `GangKey` | `J`, `true`, `''` | Desk prompt key and rebindable key mapping (rebind in the game's key settings) |
 | `InteractDistance` / `HireDistance` | `5.0` / `10.0` | Server-side distance checks |
 | `MaxTransaction` | `1000000` | Largest single deposit or withdrawal |
-| `ActionCooldown` | `750` | ms between menu actions per player |
+| `ActionCooldown` / `ReadCooldown` | `750` / `150` | ms between menu actions / menu reads (open, tabs) per player |
+| `VersionCheck` | `true` | Check GitHub for a newer version on start |
 | `PruneDays` | `90` | Delete old ledger/audit rows (0 = keep) |
 | `AllowPushToTalkWhileOpen`, `PushToTalkControls` | `true` | Keep push-to-talk working in the NUI |
-| `Payroll.*` | see file | Master switch, gang interval, notices, defaults |
-| `Fines.*` | see file | Limits, payment order, partial, collection triggers |
+| `Payroll.*` | see file | Master switch, trusted wage caller (`rsg-core`), gang interval, notices, defaults |
+| `Fines.*` | see file | Limits, payment order, partial, collection triggers, how many fines one person may issue per window (`IssueLimit`, `IssueWindowMinutes`) |
 | `Storage.*` | see file | Stash weight and slots |
 | `Jobs` | see file | Default permissions per job grade |
-| `Gang.*` | see file | Create cost, name/tag limits, member cap, default ranks, colours, disband payout |
+| `OnDuty.*` | off | `Enabled` and the list of `Actions` that need the player to be on duty |
+| `Withdraw.*` | `0`, `true` | `DailyLimit` per player per day (0 = off), `BossesExempt` |
+| `Bonus.Max` | `5000` | Largest one-off bonus |
+| `Transfers.*` | off | `Enabled`, `Max`, `SameTypeOnly` (job to job, gang to gang) |
+| `Motd.MaxLength` | `200` | Longest announcement |
+| `Gang.*` | see file | `MaxRanks` (10), create cost, name/tag limits, member cap, default ranks, colours, disband payout |
 | `Migration.*` | see file | What to import on first start |
 
 ## Use

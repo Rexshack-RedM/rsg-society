@@ -1,7 +1,7 @@
 local RSGCore = exports['rsg-core']:GetCoreObject()
 Soc.Core = RSGCore
 
-local Cooldowns = {}
+local Cooldowns, ReadCooldowns = {}, {}
 
 -----------------------------------------------------------------------
 -- Small helpers
@@ -41,8 +41,17 @@ function Soc.OnCooldown(src)
     return false
 end
 
+--- lighter limit for reads (opening the menu, loading a tab) so nobody can hammer the database with them
+function Soc.OnReadCooldown(src)
+    local now = GetGameTimer()
+    if ReadCooldowns[src] and (now - ReadCooldowns[src]) < (Config.ReadCooldown or 150) then return true end
+    ReadCooldowns[src] = now
+    return false
+end
+
 AddEventHandler('playerDropped', function()
     Cooldowns[source] = nil
+    ReadCooldowns[source] = nil
 end)
 
 local function trunc(s, n)
@@ -330,41 +339,50 @@ local function decode(text)
 end
 
 function Soc.Load()
-    Soc.S, Soc.Ranks, Soc.Perms, Soc.Members, Soc.GangOf, Soc.Locations = {}, {}, {}, {}, {}, {}
+    -- built in locals and swapped in at the end: a reload (for example /societymigrate) must never leave
+    -- the live tables empty while the queries below are running
+    local S, Ranks, Perms, Members, GangOf, Locations = {}, {}, {}, {}, {}, {}
 
     for _, r in ipairs(MySQL.query.await('SELECT * FROM rsg_societies') or {}) do
-        Soc.S[r.name] = {
+        S[r.name] = {
             name = r.name, type = r.type, label = r.label, color = r.color, tag = r.tag, owner = r.owner,
             balance = tonumber(r.balance_cents) or 0, payroll = (tonumber(r.payroll) or 0) == 1,
         }
-        if r.type == 'gang' then Soc.Members[r.name] = {} end
+        if r.type == 'gang' then Members[r.name] = {} end
     end
     for _, r in ipairs(MySQL.query.await('SELECT * FROM rsg_society_ranks') or {}) do
-        Soc.Ranks[r.society] = Soc.Ranks[r.society] or {}
-        Soc.Ranks[r.society][tonumber(r.level)] = { name = r.name, payment = tonumber(r.payment_cents) or 0, boss = (tonumber(r.is_boss) or 0) == 1 }
+        Ranks[r.society] = Ranks[r.society] or {}
+        Ranks[r.society][tonumber(r.level)] = { name = r.name, payment = tonumber(r.payment_cents) or 0, boss = (tonumber(r.is_boss) or 0) == 1 }
     end
     for _, r in ipairs(MySQL.query.await('SELECT * FROM rsg_society_perms') or {}) do
-        local s = Soc.S[r.society]
+        local s = S[r.society]
         if s then
-            Soc.Perms[r.society] = Soc.Perms[r.society] or {}
-            Soc.Perms[r.society][tonumber(r.level)] = toSet(decode(r.perms), s.type)
+            Perms[r.society] = Perms[r.society] or {}
+            Perms[r.society][tonumber(r.level)] = toSet(decode(r.perms), s.type)
         end
     end
     for _, r in ipairs(MySQL.query.await('SELECT citizenid, society, level, name FROM rsg_society_members') or {}) do
-        if Soc.Members[r.society] then
-            Soc.Members[r.society][r.citizenid] = { level = tonumber(r.level) or 0, name = r.name }
-            Soc.GangOf[r.citizenid] = r.society
+        if Members[r.society] then
+            Members[r.society][r.citizenid] = { level = tonumber(r.level) or 0, name = r.name }
+            GangOf[r.citizenid] = r.society
         end
+    end
+
+    for _, r in ipairs(MySQL.query.await("SELECT k, v FROM rsg_society_meta WHERE k LIKE 'motd:%'") or {}) do
+        local s = S[r.k:sub(6)]
+        if s then s.motd = r.v end
     end
 
     -- desks: config first, then the ones admins added in game
     for _, loc in ipairs(Config.Locations) do
-        Soc.Locations[loc.id] = { id = loc.id, name = loc.name, society = loc.society, coords = loc.coords, showblip = loc.showblip }
+        Locations[loc.id] = { id = loc.id, name = loc.name, society = loc.society, coords = loc.coords, showblip = loc.showblip }
     end
     for _, r in ipairs(MySQL.query.await('SELECT id, society, label, x, y, z FROM rsg_society_locations') or {}) do
         local id = 'db_' .. r.id
-        Soc.Locations[id] = { id = id, name = r.label or r.society, society = r.society, coords = vector3(r.x + 0.0, r.y + 0.0, r.z + 0.0), showblip = false, db = r.id }
+        Locations[id] = { id = id, name = r.label or r.society, society = r.society, coords = vector3(r.x + 0.0, r.y + 0.0, r.z + 0.0), showblip = false, db = r.id }
     end
+
+    Soc.S, Soc.Ranks, Soc.Perms, Soc.Members, Soc.GangOf, Soc.Locations = S, Ranks, Perms, Members, GangOf, Locations
 
     -- job societies named in the config
     for jobName in pairs(Config.Jobs) do
@@ -517,15 +535,17 @@ function Soc.GetMembers(name)
     local s = Soc.S[name]
     if not s then return {} end
     local list = {}
+    local grades = {}
+    for _, g in ipairs(Soc.Grades(name)) do grades[g.level] = g end
     if s.type == 'gang' then
         for cid, m in pairs(Soc.Members[name] or {}) do
-            local g = Soc.GradeOf(name, m.level)
+            local g = grades[m.level]
             list[#list + 1] = { citizenid = cid, name = m.name, level = m.level, grade = g and g.name or '?', boss = g and g.boss or false, online = RSGCore.Functions.GetPlayerByCitizenId(cid) ~= nil }
         end
     else
         for _, r in ipairs(MySQL.query.await('SELECT pj.citizenid, pj.grade, p.charinfo FROM player_jobs pj LEFT JOIN players p ON p.citizenid = pj.citizenid WHERE pj.job = ?', { name }) or {}) do
             local level = tonumber(r.grade) or 0
-            local g = Soc.GradeOf(name, level)
+            local g = grades[level]
             list[#list + 1] = { citizenid = r.citizenid, name = Soc.FullName(decode(r.charinfo)), level = level, grade = g and g.name or '?', boss = g and g.boss or false, online = RSGCore.Functions.GetPlayerByCitizenId(r.citizenid) ~= nil }
         end
     end
