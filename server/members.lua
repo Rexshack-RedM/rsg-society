@@ -275,7 +275,7 @@ function Soc.CreateGang(label, ownerCid, ownerName, opts)
     local base = slug(label)
     if base == '' then return false, 'sv_err_gang_name' end
     local name, n = base, 1
-    while Soc.S[name] or RSGCore.Shared.Gangs[name] or RSGCore.Shared.Jobs[name] or name == 'none' do
+    while Soc.S[name] or RSGCore.Shared.Gangs[name] or Soc.JobDef(name) or name == 'none' do
         n = n + 1
         name = ('%s_%d'):format(base:sub(1, 36), n)
     end

@@ -1,4 +1,4 @@
-# rsg-society 3.0.0 – Documentation
+# rsg-society 3.0.1 – Documentation
 
 ## Contents
 1. Architecture 2. Data 3. Permissions 4. Payroll 5. Fines 6. Exports 7. Events 8. Commands 9. rsg-core change 10. Migration 11. Security 12. Database 13. Troubleshooting

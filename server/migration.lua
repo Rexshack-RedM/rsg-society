@@ -34,7 +34,7 @@ local function importFunds()
         elseif not Soc.JobExists(row.job_name) then
             say(('boss account "%s" skipped: no such job in rsg-core'):format(row.job_name))
         else
-            local job = RSGCore.Shared.Jobs[row.job_name]
+            local job = Soc.JobDef(row.job_name)
             if not Soc.S[row.job_name] then
                 Soc.RegisterRow(row.job_name, 'job', job.label or row.job_name, { await = true })
             end

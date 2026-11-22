@@ -1,4 +1,4 @@
-# rsg-society 3.0.0
+# rsg-society 3.0.1
 
 One resource for everything a job or gang organisation needs: members and ranks, permissions, a bank account, payroll, shared storage, fines and a full audit trail, plus an API so other scripts can plug in.
 

@@ -53,8 +53,17 @@ local function trunc(s, n)
 end
 Soc.Trunc = trunc
 
+--- Job definition from rsg-core. Jobs live in the database (multi-job) and are added at runtime, so the copy of
+--- RSGCore.Shared.Jobs this resource got at start can be empty or stale: ask rsg-core itself first.
+function Soc.JobDef(name)
+    if type(name) ~= 'string' or name == '' then return nil end
+    local ok, def = pcall(function() return exports['rsg-core']:GetJobDefinition(name) end)
+    if ok and type(def) == 'table' then return def end
+    return RSGCore.Shared.Jobs[name]
+end
+
 function Soc.JobExists(name)
-    return type(name) == 'string' and name ~= 'unemployed' and RSGCore.Shared.Jobs[name] ~= nil
+    return type(name) == 'string' and name ~= 'unemployed' and Soc.JobDef(name) ~= nil
 end
 
 --- The label to show: the live rsg-core job label for jobs, the stored label for gangs
@@ -62,7 +71,7 @@ function Soc.Label(name)
     local s = Soc.S[name]
     if not s then return name end
     if s.type == 'job' then
-        local job = RSGCore.Shared.Jobs[name]
+        local job = Soc.JobDef(name)
         if job and job.label then return job.label end
     end
     return s.label or name
@@ -109,7 +118,7 @@ function Soc.Grades(name)
             out[#out + 1] = { level = level, name = r.name, payment = r.payment or 0, boss = r.boss == true }
         end
     else
-        local job = RSGCore.Shared.Jobs[name]
+        local job = Soc.JobDef(name)
         for key, g in pairs(job and job.grades or {}) do
             local level = tonumber(key)
             if level then
@@ -307,7 +316,7 @@ end
 function Soc.EnsureJob(name, await)
     if Soc.S[name] then return Soc.S[name] end
     if not Soc.JobExists(name) then return nil end
-    local job = RSGCore.Shared.Jobs[name]
+    local job = Soc.JobDef(name)
     return Soc.RegisterRow(name, 'job', job.label or name, { await = await })
 end
 
@@ -374,7 +383,7 @@ local function waitForJobs()
     while waited < 15000 do
         if jobsLoaded then return end
         for jobName in pairs(Config.Jobs) do
-            if RSGCore.Shared.Jobs[jobName] then return end
+            if Soc.JobDef(jobName) then return end
         end
         Wait(250)
         waited = waited + 250
