@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.3.0
+- New: admin panel, opened with `/societyadmin` (or a rebindable key). Tabs: Dashboard, Societies, Players, Desks, Fines, Audit, Tools. Manages every society: create job societies and gangs, funds, payroll, members, ranks and permissions, ledger, audit, fines, storage, disband or remove, place and remove desks, import, reload and prune.
+- Every admin call is a server callback that checks `Config.AdminPermission` again, is throttled and validates its arguments. Admin actions are audited as `Name [admin]`.
+- New config: `Config.Admin` (`Enabled`, `Command`, `Key`, `MaxFunds`).
+- 91 new locale keys in all 11 languages (`ui_adm_*`, `sv_adm_*`, `key_admin`, `ui_create_short`).
+
 ## 3.2.1
 - Added the `EnsureJobSociety(jobName)` server export: creates a job's society when the job exists in rsg-core. Used by rsg-ranch so every ranch has its own society.
 
