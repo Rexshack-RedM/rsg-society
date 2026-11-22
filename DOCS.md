@@ -1,4 +1,4 @@
-# rsg-society 3.0.1 – Documentation
+# rsg-society 3.1.0 – Documentation
 
 ## Contents
 1. Architecture 2. Data 3. Permissions 4. Payroll 5. Fines 6. Exports 7. Events 8. Commands 9. rsg-core change 10. Migration 11. Security 12. Database 13. Troubleshooting
@@ -44,10 +44,15 @@ Amount limits in `Config.Fines`. Collected from `PayWith` in order. With `AllowP
 | `RunPayroll(name)` | runs gang payroll now |
 | `IssueFine(src, targetId, name, amount, reason)` | ok, fineId or locale key |
 | `GetPlayerGang(id)`, `CreateGang(label, ownerCid)`, `AddMember(name, id, level)`, `RemoveMember(name, id)`, `SetMemberLevel(name, id, level)` | gang API |
+| `SetGangInfo(name, { label?, color?, tag? })` -> `ok, reasonKey` | rename, recolour or retag a gang (same rules as the Settings tab; the colour must be one of `Config.Gang.Colors`) |
+| `DisbandGang(name)` -> `ok, balance` | deletes a gang; the balance (dollars) is returned, not paid out |
+| `GetRanks(name)` -> `{ { level, name, boss } }` | ranks of a society, lowest first |
+| `SetGangOwner(name, citizenid)` -> `ok` | changes the recorded owner of a gang (ranks are changed with `SetMemberLevel`) |
+| `IsReady()` -> boolean | true once all societies are loaded; other resources wait for it at start |
 | `OpenStorage(src, name)` | opens the stash (checks access) |
 
 ## 7. Events (server)
-`rsg-society:server:ready`, `balanceChanged`, `memberJoined`, `memberLeft`, `rankChanged`, `gangCreated`, `gangDisbanded`, `fineIssued`. Legacy `rsg-bossmenu:client:mainmenu` and `rsg-gangmenu:client:mainmenu` still open the menu.
+`rsg-society:server:ready`, `balanceChanged`, `memberJoined`, `memberLeft`, `rankChanged`, `gangCreated`, `gangDisbanded`, `gangUpdated` (name, label, colour, tag or owner changed), `fineIssued`. Legacy `rsg-bossmenu:client:mainmenu` and `rsg-gangmenu:client:mainmenu` still open the menu.
 
 ## 8. Commands
 `/society`, `/gang`, `/fines`, `/payfines`; admin: `/addsociety <job>`, `/societydesk <society>`, `/removesocietydesk`, `/societyfunds <society> <add|remove> <amount>`, `/societymigrate`, `/removegang <id>`. Key: rebindable in the game's key settings (`Config.UseKeyMapping`).
@@ -57,7 +62,7 @@ In `server/functions.lua`, `PaycheckInterval` asks `exports['rsg-society']:Proce
 
 ## 10. Migration
 On first start (`Config.Migration`): `management_funds` balances, core gangs with members or money, and rsg-gangs data (`rsg_gangs`, `rsg_gang_members`, `rsg_gang_logs`) are imported once; markers in `rsg_society_meta`. Re-run with `/societymigrate`. Static gangs in `shared/gangs.lua` remain but are overridden at runtime.
-**Note:** rsg-gangs keeps its own copy of organisation data until it is changed to use these exports; do not let both manage membership.
+**rsg-gangs (3.5.0 and newer)** uses these exports and events for gang identity, members, ranks, permissions and the bank, and keeps only its gameplay data (wagon, equipment, turf, bounties...). Start rsg-society before it. The `rsg_gang_members` table is only read by the one-time import.
 
 ## 11. Security
 All amounts, ranks and targets are validated on the server; distance checks on desks, hiring, fining; per-player cooldown; rank hierarchy enforced (no acting on equal/higher ranks except bosses when `AllowEqualRank`); SQL uses parameters; NUI renders user text with `textContent`.

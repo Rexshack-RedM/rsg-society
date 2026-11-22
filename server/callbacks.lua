@@ -459,45 +459,9 @@ end)
 
 function Actions.settings(ctx, data)
     if ctx.s.type ~= 'gang' or not ctx.acc.perms.settings then return reply(false, 'sv_err_no_permission') end
-    local s = ctx.s
-    local changes = {}
-
-    if data.label ~= nil then
-        local label = Soc.CleanLabel(data.label)
-        if not label then return reply(false, 'sv_err_gang_name') end
-        if label ~= s.label then
-            if Soc.LabelTaken(label, ctx.name) then return reply(false, 'sv_err_gang_taken') end
-            s.label = label
-            MySQL.update('UPDATE rsg_societies SET label = ? WHERE name = ?', { label, ctx.name })
-            changes[#changes + 1] = label
-        end
-    end
-    if data.color ~= nil then
-        local color = tostring(data.color)
-        local allowed = false
-        for _, c in ipairs(Config.Gang.Colors) do if c == color then allowed = true end end
-        if not allowed then return reply(false, 'sv_err_color') end
-        if color ~= s.color then
-            s.color = color
-            MySQL.update('UPDATE rsg_societies SET color = ? WHERE name = ?', { color, ctx.name })
-            changes[#changes + 1] = color
-        end
-    end
-    if data.tag ~= nil then
-        local tag = tostring(data.tag):upper():gsub('[^%w]', '')
-        if #tag > Config.Gang.MaxTagLength then return reply(false, 'sv_err_tag') end
-        tag = tag ~= '' and tag or nil
-        if tag ~= s.tag then
-            s.tag = tag
-            MySQL.update('UPDATE rsg_societies SET tag = ? WHERE name = ?', { tag, ctx.name })
-            changes[#changes + 1] = tag or '-'
-        end
-    end
-
-    if #changes == 0 then return reply(true, 'sv_nothing_changed') end
-    Soc.SyncGangDef(ctx.name)
-    Soc.Audit(ctx.name, ctx.cid, ctx.who, 'settings', table.concat(changes, ', '))
-    return reply(true, 'sv_settings_saved')
+    local ok, key = Soc.SetInfo(ctx.name, data, ctx.cid, ctx.who)
+    if not ok then return reply(false, key) end
+    return reply(true, key)
 end
 
 function Actions.leave(ctx)

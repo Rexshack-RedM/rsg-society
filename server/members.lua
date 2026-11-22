@@ -295,6 +295,52 @@ function Soc.CreateGang(label, ownerCid, ownerName, opts)
     return true, name
 end
 
+--- Changes the label, colour and/or tag of a gang society (data = { label?, color?, tag? }).
+--- Returns ok, reasonKey. The key is 'sv_settings_saved' or 'sv_nothing_changed' on success.
+function Soc.SetInfo(name, data, actorCid, actorName)
+    local s = Soc.S[name]
+    if not s or s.type ~= 'gang' or type(data) ~= 'table' then return false, 'sv_err_unknown' end
+    local changes = {}
+
+    if data.label ~= nil then
+        local label = Soc.CleanLabel(data.label)
+        if not label then return false, 'sv_err_gang_name' end
+        if label ~= s.label then
+            if Soc.LabelTaken(label, name) then return false, 'sv_err_gang_taken' end
+            s.label = label
+            MySQL.update('UPDATE rsg_societies SET label = ? WHERE name = ?', { label, name })
+            changes[#changes + 1] = label
+        end
+    end
+    if data.color ~= nil then
+        local color = tostring(data.color)
+        local allowed = false
+        for _, c in ipairs(Config.Gang.Colors) do if c == color then allowed = true end end
+        if not allowed then return false, 'sv_err_color' end
+        if color ~= s.color then
+            s.color = color
+            MySQL.update('UPDATE rsg_societies SET color = ? WHERE name = ?', { color, name })
+            changes[#changes + 1] = color
+        end
+    end
+    if data.tag ~= nil then
+        local tag = tostring(data.tag):upper():gsub('[^%w]', '')
+        if #tag > Config.Gang.MaxTagLength then return false, 'sv_err_tag' end
+        tag = tag ~= '' and tag or nil
+        if tag ~= s.tag then
+            s.tag = tag
+            MySQL.update('UPDATE rsg_societies SET tag = ? WHERE name = ?', { tag, name })
+            changes[#changes + 1] = tag or '-'
+        end
+    end
+
+    if #changes == 0 then return true, 'sv_nothing_changed' end
+    Soc.SyncGangDef(name)
+    Soc.Audit(name, actorCid, actorName, 'settings', table.concat(changes, ', '))
+    TriggerEvent('rsg-society:server:gangUpdated', name)
+    return true, 'sv_settings_saved'
+end
+
 --- Deletes a gang society. Members drop to no gang. Returns the balance (cents) that was in the account.
 function Soc.DisbandGang(name)
     local s = Soc.S[name]
@@ -323,6 +369,37 @@ end
 -----------------------------------------------------------------------
 -- Exports
 -----------------------------------------------------------------------
+--- SetGangInfo(name, { label?, color?, tag? }) -> ok, reasonKey
+exports('SetGangInfo', function(name, data)
+    return Soc.SetInfo(name, data, nil, GetInvokingResource() or 'api')
+end)
+
+--- DisbandGang(name) -> ok, balance. Members drop to no gang and the society is deleted. The balance
+--- (dollars) is NOT paid out: the caller decides what to do with it (rsg-society's own menu pays the leader).
+exports('DisbandGang', function(name)
+    if type(name) ~= 'string' or not Soc.S[name] or Soc.S[name].type ~= 'gang' then return false, 0 end
+    local cents = Soc.DisbandGang(name)
+    if cents == nil then return false, 0 end
+    return true, cents / 100
+end)
+
+--- SetGangOwner(name, citizenid) -> ok. Only changes the recorded founder/owner; ranks are changed with SetMemberLevel.
+exports('SetGangOwner', function(name, cid)
+    local s = Soc.S[name]
+    if not s or s.type ~= 'gang' or type(cid) ~= 'string' or not (Soc.Members[name] and Soc.Members[name][cid]) then return false end
+    s.owner = cid
+    MySQL.update('UPDATE rsg_societies SET owner = ? WHERE name = ?', { cid, name })
+    TriggerEvent('rsg-society:server:gangUpdated', name)
+    return true
+end)
+
+--- GetRanks(name) -> { { level, name, boss }, ... } lowest first
+exports('GetRanks', function(name)
+    local out = {}
+    for _, g in ipairs(Soc.Grades(name)) do out[#out + 1] = { level = g.level, name = g.name, boss = g.boss } end
+    return out
+end)
+
 exports('GetPlayerGang', function(id)
     local cid = Soc.ResolveCid(id)
     local name = cid and Soc.GangOf[cid]

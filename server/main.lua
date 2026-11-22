@@ -462,6 +462,9 @@ exports('RemoveMoney', apiRemove)
 exports('AddGangMoney', apiAdd)
 exports('RemoveGangMoney', apiRemove)
 
+--- IsReady() -> boolean: true once every society is loaded (other resources wait for this at start)
+exports('IsReady', function() return Soc.Ready == true end)
+
 exports('GetSociety', function(name)
     local s = Soc.S[name]
     if not s then return nil end
