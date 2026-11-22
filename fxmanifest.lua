@@ -6,7 +6,7 @@ lua54 'yes'
 author 'RexShack'
 name 'rsg-society'
 description 'Societies for the RSG Framework: members, ranks, permissions, finances, payroll, storage, fines, audit trail and an API. Replaces rsg-bossmenu and rsg-gangmenu and owns gang membership.'
-version '3.2.0'
+version '3.2.1'
 
 -- Old resources that this one answers for, so scripts that still call
 -- exports['rsg-bossmenu'] / exports['rsg-gangmenu'] keep working.

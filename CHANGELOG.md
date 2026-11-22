@@ -1,5 +1,8 @@
 # Changelog
 
+## 3.2.1
+- Added the `EnsureJobSociety(jobName)` server export: creates a job's society when the job exists in rsg-core. Used by rsg-ranch so every ranch has its own society.
+
 ## 3.2.0
 - New: `bonus` (one-off payment to an online member) and `announce` (message of the day) permissions and actions.
 - New: optional money controls, all off by default: `Config.OnDuty`, `Config.Withdraw.DailyLimit`, `Config.Transfers`.
